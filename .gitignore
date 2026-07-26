@@ -11,3 +11,5 @@ coverage/
 # local-only
 *.bak-*
 .codefold/
+.npm-cache/
+.tmp/
