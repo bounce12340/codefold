@@ -14,15 +14,19 @@ import {
   type FolderGroup
 } from '../graph/folders';
 import type {
+  AgentSnapshot,
   FunctionGraphPayload,
   GraphEdge,
   GraphNode,
   GroupLayout,
   LayoutPoint,
+  NodeState,
+  NodeStateUpdate,
   WebviewGraph,
   WorkspaceLayout
 } from '../scanner/model';
 import { AnnotationSaveTracker } from './annotationSaveTracker';
+import { hasAgentConflict } from '../state/nodeStateMachine';
 
 declare function acquireVsCodeApi(): {
   postMessage(message: unknown): void;
@@ -114,11 +118,18 @@ const nodeDetails = requireElement<HTMLDivElement>('node-details');
 const nodeName = requireElement<HTMLParagraphElement>('node-name');
 const nodePath = requireElement<HTMLParagraphElement>('node-path');
 const nodeLanguage = requireElement<HTMLParagraphElement>('node-language');
+const nodeState = requireElement<HTMLParagraphElement>('node-state');
+const nodeAgents = requireElement<HTMLParagraphElement>('node-agents');
+const nodeErrors = requireElement<HTMLParagraphElement>('node-errors');
+const nodeConflict = requireElement<HTMLDivElement>('node-conflict');
 const autoAnnotation = requireElement<HTMLParagraphElement>('auto-annotation');
 const manualAnnotation = requireElement<HTMLTextAreaElement>('manual-annotation');
 const saveAnnotationButton = requireElement<HTMLButtonElement>('save-annotation');
 const openFileButton = requireElement<HTMLButtonElement>('open-file');
 const saveStatus = requireElement<HTMLDivElement>('save-status');
+const agentEmpty = requireElement<HTMLParagraphElement>('agent-empty');
+const agentTree = requireElement<HTMLUListElement>('agent-tree');
+const agentConflicts = requireElement<HTMLParagraphElement>('agent-conflicts');
 
 let graph: WebviewGraph | undefined;
 let groups: GroupView[] = [];
@@ -127,6 +138,8 @@ let fileById = new Map<string, GraphNode>();
 let functionById = new Map<string, GraphNode>();
 let functionEdges = new Map<string, GraphEdge>();
 let functionViews = new Map<string, FunctionView>();
+let pendingNodeStates = new Map<string, GraphNode>();
+let agentsById = new Map<string, AgentSnapshot>();
 const loadedFunctionFiles = new Set<string>();
 const loadingFunctionFiles = new Set<string>();
 const expandedFunctionFiles = new Set<string>();
@@ -170,6 +183,10 @@ function receiveExtensionMessage(event: MessageEvent<unknown>): void {
   }
   if (event.data.type === 'functions') {
     applyFunctionPayload(event.data.payload);
+    return;
+  }
+  if (event.data.type === 'stateUpdate') {
+    applyStateUpdate(event.data.update);
     return;
   }
   if (event.data.type === 'annotationSaved') {
@@ -402,7 +419,18 @@ function createGroupView(
 }
 
 function toggleGroup(group: GroupView): void {
-  group.expanded = !group.expanded;
+  setGroupExpanded(group, !group.expanded, true);
+}
+
+function setGroupExpanded(
+  group: GroupView,
+  expanded: boolean,
+  saveLayout: boolean
+): void {
+  if (group.expanded === expanded) {
+    return;
+  }
+  group.expanded = expanded;
   updateGroupGeometry(group);
   if (group.expanded) {
     renderGroupFiles(group);
@@ -416,7 +444,9 @@ function toggleGroup(group: GroupView): void {
   );
   header.title = `${group.expanded ? 'Collapse' : 'Expand'} ${group.group.name}`;
   drawEdges();
-  persistLayout();
+  if (saveLayout) {
+    persistLayout();
+  }
 }
 
 function updateGroupGeometry(group: GroupView): void {
@@ -542,7 +572,9 @@ function createFileCard(
     `<div class="file-title"><button class="file-function-toggle" type="button">▸</button>`
     + `<span class="file-name"></span>`
     + `<span class="language-badge"></span></div>`
-    + `<div class="file-annotation"></div>`;
+    + `<div class="file-annotation"></div>`
+    + `<span class="node-state-lamp" aria-hidden="true"></span>`
+    + `<div class="agent-badges" aria-label="Editing agents"></div>`;
   const functionToggle = requireDescendant<HTMLButtonElement>(
     card,
     '.file-function-toggle'
@@ -561,6 +593,7 @@ function createFileCard(
   requireDescendant<HTMLElement>(card, '.file-name').textContent = file.name;
   requireDescendant<HTMLElement>(card, '.language-badge').textContent = file.lang;
   updateFileCardContent(card, file);
+  applyNodePresentation(card, file);
   positionFileCard(card, position);
 
   let moved = false;
@@ -697,7 +730,9 @@ function applyFunctionPayload(payload: FunctionGraphPayload): void {
     return;
   }
   for (const node of payload.nodes) {
-    functionById.set(node.id, node);
+    const pending = pendingNodeStates.get(node.id);
+    functionById.set(node.id, pending ? mergeNodeState(node, pending) : node);
+    pendingNodeStates.delete(node.id);
   }
   for (const edge of payload.edges) {
     functionEdges.set(graphEdgeKey(edge), edge);
@@ -790,10 +825,13 @@ function createFunctionCard(
   card.style.left = `${position.x}px`;
   card.style.top = `${position.y}px`;
   card.innerHTML =
-    `<div class="function-name"></div><div class="function-range"></div>`;
+    `<div class="function-name"></div><div class="function-range"></div>`
+    + `<span class="node-state-lamp" aria-hidden="true"></span>`
+    + `<div class="agent-badges" aria-label="Editing agents"></div>`;
   requireDescendant<HTMLElement>(card, '.function-name').textContent = node.name;
   requireDescendant<HTMLElement>(card, '.function-range').textContent =
     `lines ${node.range.startLine + 1}–${node.range.endLine + 1}`;
+  applyNodePresentation(card, node);
   card.addEventListener('click', (event) => {
     event.stopPropagation();
     selectNode(node.id);
@@ -864,6 +902,225 @@ function updateFileCardContent(card: HTMLElement, file: GraphNode): void {
     annotation === null ? '' : truncateAnnotation(annotation);
 }
 
+function applyStateUpdate(update: NodeStateUpdate): void {
+  agentsById = new Map(update.agents.map((agent) => [agent.id, agent]));
+  for (const incoming of update.nodes) {
+    const current = fileById.get(incoming.id) ?? functionById.get(incoming.id);
+    if (current) {
+      mergeNodeState(current, incoming);
+      pendingNodeStates.delete(incoming.id);
+    } else {
+      pendingNodeStates.set(incoming.id, incoming);
+    }
+  }
+
+  for (const incoming of update.nodes) {
+    const node = fileById.get(incoming.id)
+      ?? functionById.get(incoming.id)
+      ?? pendingNodeStates.get(incoming.id);
+    if (!node) {
+      continue;
+    }
+    const card = nodeLayer.querySelector<HTMLElement>(
+      `.file-card[data-node-id="${escapeSelector(node.id)}"], `
+      + `.function-card[data-node-id="${escapeSelector(node.id)}"]`
+    );
+    if (card) {
+      applyNodePresentation(card, node);
+    }
+    if (requiresAttention(node.state)) {
+      revealAttentionNode(node);
+    }
+  }
+  renderAgentHierarchy();
+  if (selectedNodeId) {
+    const selected = fileById.get(selectedNodeId) ?? functionById.get(selectedNodeId);
+    if (selected) {
+      updateSelectedStateDetails(selected);
+    }
+  }
+}
+
+function mergeNodeState(target: GraphNode, state: GraphNode): GraphNode {
+  target.state = state.state;
+  target.errorSources = [...state.errorSources];
+  target.editingAgents = [...state.editingAgents];
+  target.lastVerifiedAt = state.lastVerifiedAt;
+  return target;
+}
+
+function requiresAttention(state: NodeState): boolean {
+  return state === 'editing' || state === 'dirty' || state === 'error';
+}
+
+function revealAttentionNode(node: GraphNode): void {
+  const fileId = node.kind === 'file' ? node.id : node.path;
+  const group = groupForFile(fileId);
+  if (!group) {
+    return;
+  }
+  // Expanding changes only this group's dimensions and children. Its x/y and
+  // every other group remain untouched; no force simulation is restarted.
+  setGroupExpanded(group, true, false);
+  if (node.kind !== 'function' || expandedFunctionFiles.has(fileId)) {
+    return;
+  }
+  expandedFunctionFiles.add(fileId);
+  updateGroupGeometry(group);
+  updateFileFunctionToggleForCard(fileId);
+  if (!loadedFunctionFiles.has(fileId)) {
+    if (!loadingFunctionFiles.has(fileId)) {
+      loadingFunctionFiles.add(fileId);
+      updateFileFunctionToggleForCard(fileId);
+      vscode.postMessage({ type: 'loadFunctions', fileId });
+    }
+  } else {
+    renderFileFunctions(group, fileId);
+  }
+  drawEdges();
+}
+
+function applyNodePresentation(card: HTMLElement, node: GraphNode): void {
+  const states: NodeState[] = [
+    'idle',
+    'editing',
+    'dirty',
+    'verifying',
+    'passing',
+    'error'
+  ];
+  for (const stateName of states) {
+    card.classList.toggle(`node-state-${stateName}`, node.state === stateName);
+  }
+  card.classList.toggle('node-conflict', hasAgentConflict(node));
+  card.dataset.state = node.state;
+  const lamp = card.querySelector<HTMLElement>('.node-state-lamp');
+  if (lamp) {
+    lamp.title = `State: ${node.state}`;
+  }
+  const badges = card.querySelector<HTMLElement>('.agent-badges');
+  if (!badges) {
+    return;
+  }
+  badges.replaceChildren(
+    ...node.editingAgents.map((agentId) =>
+      createAgentBadge(agentsById.get(agentId) ?? fallbackAgent(agentId))
+    )
+  );
+  badges.hidden = node.editingAgents.length === 0;
+  badges.setAttribute(
+    'aria-label',
+    node.editingAgents.length > 0
+      ? `Editing agents: ${node.editingAgents.join(', ')}`
+      : 'No editing agent'
+  );
+}
+
+function createAgentBadge(agent: AgentSnapshot): HTMLSpanElement {
+  const badge = document.createElement('span');
+  const [shape = 'square', tone = 'violet'] = agent.badge.split('-');
+  badge.className = `agent-badge shape-${shape} tone-${tone}`;
+  badge.textContent = agent.name.slice(0, 1).toUpperCase();
+  badge.title = `${agent.name} (${agent.id})`;
+  badge.setAttribute('aria-label', badge.title);
+  return badge;
+}
+
+function fallbackAgent(agentId: string): AgentSnapshot {
+  return {
+    id: agentId,
+    name: agentId,
+    parentId: null,
+    badge: 'square-violet',
+    status: 'active',
+    workAreas: []
+  };
+}
+
+function renderAgentHierarchy(): void {
+  agentTree.replaceChildren();
+  agentEmpty.hidden = agentsById.size > 0;
+  const agents = [...agentsById.values()];
+  const children = new Map<string | null, AgentSnapshot[]>();
+  for (const agent of agents) {
+    const parent = agent.parentId && agentsById.has(agent.parentId)
+      ? agent.parentId
+      : null;
+    const siblings = children.get(parent) ?? [];
+    siblings.push(agent);
+    children.set(parent, siblings);
+  }
+  for (const siblings of children.values()) {
+    siblings.sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  const rendered = new Set<string>();
+  const createBranch = (agent: AgentSnapshot, ancestors: Set<string>): HTMLLIElement => {
+    const item = document.createElement('li');
+    item.className = 'agent-entry';
+    const line = document.createElement('div');
+    line.className = 'agent-line';
+    line.append(createAgentBadge(agent));
+    const name = document.createElement('span');
+    name.className = 'agent-name';
+    name.textContent = agent.name;
+    line.append(name);
+    const state = document.createElement('span');
+    state.className = 'agent-status';
+    state.textContent = agent.status;
+    line.append(state);
+    item.append(line);
+    if (agent.workAreas.length > 0) {
+      const work = document.createElement('p');
+      work.className = 'agent-work';
+      work.textContent = agent.workAreas.join(', ');
+      item.append(work);
+    }
+    rendered.add(agent.id);
+    if (!ancestors.has(agent.id)) {
+      const descendants = children.get(agent.id) ?? [];
+      if (descendants.length > 0) {
+        const list = document.createElement('ul');
+        const nextAncestors = new Set(ancestors).add(agent.id);
+        for (const child of descendants) {
+          list.append(createBranch(child, nextAncestors));
+        }
+        item.append(list);
+      }
+    }
+    return item;
+  };
+
+  for (const root of children.get(null) ?? []) {
+    agentTree.append(createBranch(root, new Set()));
+  }
+  for (const agent of agents) {
+    if (!rendered.has(agent.id)) {
+      agentTree.append(createBranch(agent, new Set()));
+    }
+  }
+
+  const conflicts = allKnownNodes()
+    .filter(hasAgentConflict)
+    .map((node) => `${node.id} (${node.editingAgents.join(', ')})`);
+  agentConflicts.hidden = conflicts.length === 0;
+  agentConflicts.textContent = conflicts.length === 0
+    ? ''
+    : `Potential conflicts: ${conflicts.join('; ')}`;
+}
+
+function allKnownNodes(): GraphNode[] {
+  const nodes = new Map<string, GraphNode>();
+  for (const node of [
+    ...fileById.values(),
+    ...functionById.values(),
+    ...pendingNodeStates.values()
+  ]) {
+    nodes.set(node.id, node);
+  }
+  return [...nodes.values()];
+}
+
 function showFileTooltip(event: PointerEvent, file: GraphNode): void {
   const annotation = effectiveAnnotation(file);
   tooltip.textContent = annotation === null ? file.path : `${file.path}\n\n${annotation}`;
@@ -891,6 +1148,7 @@ function selectNode(nodeId: string): void {
   nodeName.textContent = node.name;
   nodePath.textContent = node.path;
   nodeLanguage.textContent = node.lang;
+  updateSelectedStateDetails(node);
   autoAnnotation.textContent = isFile
     ? (node.annotation.auto ?? 'No automatic annotation.')
     : `Source lines ${node.range.startLine + 1}–${node.range.endLine + 1}`;
@@ -908,6 +1166,19 @@ function selectNode(nodeId: string): void {
     )
     : (annotationSaves.hasDraft(nodeId) ? 'Unsaved changes' : '');
   saveStatus.classList.remove('error');
+}
+
+function updateSelectedStateDetails(node: GraphNode): void {
+  nodeState.textContent = node.state;
+  nodeAgents.textContent = node.editingAgents.length > 0
+    ? node.editingAgents
+      .map((id) => agentsById.get(id)?.name ?? id)
+      .join(', ')
+    : (node.state === 'editing' ? 'human / unknown' : 'none');
+  nodeErrors.textContent = node.errorSources.length > 0
+    ? node.errorSources.join(', ')
+    : 'none';
+  nodeConflict.hidden = !hasAgentConflict(node);
 }
 
 function previewManualAnnotation(): void {
@@ -1419,6 +1690,8 @@ function clearGraph(): void {
   functionById.clear();
   functionEdges.clear();
   functionViews.clear();
+  pendingNodeStates.clear();
+  agentsById.clear();
   loadedFunctionFiles.clear();
   loadingFunctionFiles.clear();
   expandedFunctionFiles.clear();
@@ -1429,6 +1702,7 @@ function clearGraph(): void {
   sidebarEmpty.hidden = false;
   nodeDetails.hidden = true;
   tooltip.hidden = true;
+  renderAgentHierarchy();
 }
 
 function fileGridColumns(fileCount: number): number {
@@ -1487,6 +1761,7 @@ function isExtensionMessage(
 ): value is
   | { type: 'graph'; graph: WebviewGraph }
   | { type: 'functions'; payload: FunctionGraphPayload }
+  | { type: 'stateUpdate'; update: NodeStateUpdate }
   | { type: 'error'; message: string }
   | { type: 'annotationSaved'; nodeId: string; manual: string | null }
   | { type: 'annotationSaveError'; nodeId: string; message: string }
@@ -1510,6 +1785,17 @@ function isExtensionMessage(
       && Array.isArray(payload.nodes)
       && 'edges' in payload
       && Array.isArray(payload.edges)
+    );
+  }
+  if (type === 'stateUpdate' && 'update' in value) {
+    const update = value.update;
+    return (
+      typeof update === 'object'
+      && update !== null
+      && 'nodes' in update
+      && Array.isArray(update.nodes)
+      && 'agents' in update
+      && Array.isArray(update.agents)
     );
   }
   if (type === 'layoutSaved') {

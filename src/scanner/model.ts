@@ -31,6 +31,23 @@ export interface GraphEdge {
   kind: 'import' | 'call' | 'contains';
 }
 
+export interface AgentInfo {
+  id: string;
+  name: string;
+  parentId: string | null;
+  badge: string;
+  status: 'active' | 'idle' | 'done';
+}
+
+export interface AgentSnapshot extends AgentInfo {
+  workAreas: string[];
+}
+
+export interface NodeStateUpdate {
+  nodes: GraphNode[];
+  agents: AgentSnapshot[];
+}
+
 export interface FileGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];

@@ -3,9 +3,13 @@ import type {
   FunctionGraphPayload,
   GraphEdge,
   GraphNode,
+  NodeStateUpdate,
   WebviewGraph,
   WorkspaceLayout
 } from './scanner/model';
+import { AgentRegistry } from './agents/agentRegistry';
+import type { AgentHookEvent } from './agents/events';
+import { AgentHookServer } from './agents/hookServer';
 import {
   emptyWorkspaceLayout,
   readWorkspaceLayout,
@@ -13,6 +17,8 @@ import {
 } from './layout/workspaceLayout';
 import { writeWorkspaceNote } from './scanner/notes';
 import { scanWorkspaceRoot } from './scanner/scanWorkspace';
+import { NodeStateStore } from './state/nodeStateMachine';
+import { findChangedLineRange } from './state/textChanges';
 
 const MAX_FILES = 2_000;
 const VIEW_TYPES = {
@@ -22,11 +28,53 @@ const VIEW_TYPES = {
 
 type ViewMode = keyof typeof VIEW_TYPES;
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const output = vscode.window.createOutputChannel('CodeFold');
+  const agentRegistry = new AgentRegistry();
+  let phase2Runtime: Phase2Runtime | undefined;
+  const hookServer = new AgentHookServer({
+    log: (message) => output.appendLine(`[agent hook] ${message}`),
+    onEvent: async (event) => {
+      if (phase2Runtime) {
+        await phase2Runtime.handleAgentEvent(event);
+        return;
+      }
+      agentRegistry.apply(event, eventWorkArea(event));
+      output.appendLine(
+        `[agent hook] Accepted ${event.type} for ${event.agent_id}; `
+        + 'no 2D canvas is currently open.'
+      );
+    }
+  });
+
+  try {
+    const info = await hookServer.start();
+    output.appendLine(`Agent hook endpoint: ${info.url}`);
+    output.appendLine(`Agent hook token: ${info.token}`);
+    output.appendLine(
+      'The endpoint is bound only to 127.0.0.1; see docs/agent-hooks.md for hook setup.'
+    );
+  } catch (error) {
+    const detail = formatError(error);
+    output.appendLine(`Could not start the CodeFold agent hook endpoint: ${detail}`);
+    output.show(true);
+  }
+
   context.subscriptions.push(
     output,
-    registerGraphCommand(context, output, 'codefold.open', '2d'),
+    { dispose: () => void hookServer.stop().catch((error) => {
+      output.appendLine(`Could not stop the CodeFold agent hook endpoint: ${formatError(error)}`);
+    }) },
+    registerGraphCommand(
+      context,
+      output,
+      'codefold.open',
+      '2d',
+      agentRegistry,
+      (runtime) => {
+        phase2Runtime = runtime;
+      }
+    ),
     registerGraphCommand(context, output, 'codefold.open3d', '3d')
   );
 }
@@ -39,10 +87,13 @@ function registerGraphCommand(
   context: vscode.ExtensionContext,
   output: vscode.OutputChannel,
   command: string,
-  mode: ViewMode
+  mode: ViewMode,
+  agentRegistry?: AgentRegistry,
+  setPhase2Runtime?: (runtime: Phase2Runtime | undefined) => void
 ): vscode.Disposable {
   let currentPanel: vscode.WebviewPanel | undefined;
   let receiveSubscription: vscode.Disposable | undefined;
+  let localPhase2Runtime: Phase2Runtime | undefined;
   return vscode.commands.registerCommand(command, async () => {
     if (currentPanel === undefined) {
       currentPanel = createPanel(context, mode);
@@ -50,6 +101,9 @@ function registerGraphCommand(
         () => {
           receiveSubscription?.dispose();
           receiveSubscription = undefined;
+          localPhase2Runtime?.dispose();
+          localPhase2Runtime = undefined;
+          setPhase2Runtime?.(undefined);
           currentPanel = undefined;
         },
         undefined,
@@ -61,6 +115,9 @@ function registerGraphCommand(
 
     const panel = currentPanel;
     receiveSubscription?.dispose();
+    localPhase2Runtime?.dispose();
+    localPhase2Runtime = undefined;
+    setPhase2Runtime?.(undefined);
     let ready = false;
     let pendingGraph: WebviewGraph | undefined;
     let pendingFunctionNodes: GraphNode[] = [];
@@ -79,6 +136,9 @@ function registerGraphCommand(
           ready = true;
           if (pendingGraph !== undefined) {
             await panel.webview.postMessage({ type: 'graph', graph: pendingGraph });
+            if (localPhase2Runtime) {
+              await localPhase2Runtime.postSnapshot();
+            }
           }
           return;
         }
@@ -242,8 +302,23 @@ function registerGraphCommand(
       functionStartLines = result.functionStartLines;
       noteTargets = result.noteTargets;
       layoutRoot = result.layoutRoot;
+      if (mode === '2d' && agentRegistry) {
+        localPhase2Runtime = createPhase2Runtime({
+          panel,
+          graph: pendingGraph,
+          functionNodes: pendingFunctionNodes,
+          fileUris,
+          fileContents: result.fileContents,
+          agentRegistry,
+          output
+        });
+        setPhase2Runtime?.(localPhase2Runtime);
+      }
       if (ready) {
         await panel.webview.postMessage({ type: 'graph', graph: pendingGraph });
+        if (localPhase2Runtime) {
+          await localPhase2Runtime.postSnapshot();
+        }
       }
       output.appendLine(
         `Rendered ${pendingGraph.nodes.length} file nodes and `
@@ -289,6 +364,7 @@ async function scanWorkspace(
   fileUris: Map<string, vscode.Uri>;
   functionStartLines: Map<string, number>;
   noteTargets: Map<string, NoteTarget>;
+  fileContents: Map<string, string>;
   layoutRoot: string | undefined;
 }> {
   const folders = vscode.workspace.workspaceFolders;
@@ -303,6 +379,7 @@ async function scanWorkspace(
   const fileUris = new Map<string, vscode.Uri>();
   const functionStartLines = new Map<string, number>();
   const noteTargets = new Map<string, NoteTarget>();
+  const fileContents = new Map<string, string>();
   let totalFiles = 0;
   let truncated = false;
   let layout = emptyWorkspaceLayout();
@@ -355,6 +432,10 @@ async function scanWorkspace(
         workspaceRoot: folder.uri.fsPath,
         relativePath: node.path
       });
+      const content = result.sourceContents[node.path];
+      if (content !== undefined) {
+        fileContents.set(id, content);
+      }
     }
     for (const edge of result.edges) {
       combinedEdges.push({
@@ -422,6 +503,7 @@ async function scanWorkspace(
       fileUris.delete(nodeId);
       noteTargets.delete(nodeId);
       functionStartLines.delete(nodeId);
+      fileContents.delete(nodeId);
     }
   }
   const functionCounts: Record<string, number> = {};
@@ -452,9 +534,324 @@ async function scanWorkspace(
     functionNodes: visibleFunctionNodes,
     functionEdges: visibleFunctionEdges,
     fileUris,
-    functionStartLines,
-    noteTargets,
-    layoutRoot
+      functionStartLines,
+      noteTargets,
+      fileContents,
+      layoutRoot
+  };
+}
+
+interface Phase2Runtime extends vscode.Disposable {
+  handleAgentEvent(event: AgentHookEvent): Promise<void>;
+  postSnapshot(): Promise<void>;
+}
+
+interface Phase2RuntimeOptions {
+  panel: vscode.WebviewPanel;
+  graph: WebviewGraph;
+  functionNodes: GraphNode[];
+  fileUris: Map<string, vscode.Uri>;
+  fileContents: Map<string, string>;
+  agentRegistry: AgentRegistry;
+  output: vscode.OutputChannel;
+}
+
+function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
+  const {
+    panel,
+    graph,
+    functionNodes,
+    fileUris,
+    fileContents,
+    agentRegistry,
+    output
+  } = options;
+  const allNodes = [...graph.nodes, ...functionNodes];
+  const nodeById = new Map(allNodes.map((node) => [node.id, node]));
+  const functionsByPath = new Map<string, GraphNode[]>();
+  for (const node of functionNodes) {
+    const siblings = functionsByPath.get(node.path) ?? [];
+    siblings.push(node);
+    functionsByPath.set(node.path, siblings);
+  }
+  const fileIdByFsPath = new Map<string, string>();
+  for (const file of graph.nodes) {
+    const uri = fileUris.get(file.id);
+    if (uri) {
+      fileIdByFsPath.set(normalizeFsPath(uri.fsPath), file.id);
+    }
+  }
+
+  let disposed = false;
+  const postState = async (nodes: GraphNode[]): Promise<void> => {
+    if (disposed) {
+      return;
+    }
+    const update: NodeStateUpdate = {
+      nodes,
+      agents: agentRegistry.snapshots()
+    };
+    try {
+      await panel.webview.postMessage({ type: 'stateUpdate', update });
+    } catch (error) {
+      output.appendLine(`Could not update Phase 2 webview state: ${formatError(error)}`);
+    }
+  };
+  const stateStore = new NodeStateStore(allNodes, (nodes) => {
+    void postState(nodes);
+  });
+
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    '**/*.{ts,tsx,js,jsx,py}',
+    true,
+    false,
+    true
+  );
+  const watcherChange = watcher.onDidChange((uri) => {
+    const fileId = fileIdByFsPath.get(normalizeFsPath(uri.fsPath));
+    if (!fileId) {
+      output.appendLine(
+        `Ignored a changed source outside the scanned graph (including .gitignore): ${uri.fsPath}`
+      );
+      return;
+    }
+    void vscode.workspace.fs.readFile(uri).then(
+      (bytes) => {
+        const current = Buffer.from(bytes).toString('utf8');
+        const previous = fileContents.get(fileId);
+        fileContents.set(fileId, current);
+        const changedRange = previous === undefined
+          ? undefined
+          : findChangedLineRange(previous, current);
+        const changedFunctions = changedRange === undefined
+          ? []
+          : (functionsByPath.get(fileId) ?? []).filter((node) =>
+            rangesOverlap(
+              node.range.startLine,
+              node.range.endLine,
+              changedRange.startLine,
+              changedRange.endLine
+            )
+          );
+        stateStore.markFileChange([
+          fileId,
+          ...changedFunctions.map((node) => node.id)
+        ]);
+        output.appendLine(
+          `FileSystemWatcher detected a change in ${fileId}; `
+          + (
+            previous === undefined
+              ? 'no prior text snapshot was available, so only the file node was marked.'
+              : `${changedFunctions.length} function range(s) were matched.`
+          )
+        );
+      },
+      (error) => {
+        stateStore.markFileChange([fileId]);
+        output.appendLine(
+          `Could not read changed file ${fileId}; marked only the file node: ${formatError(error)}`
+        );
+        output.show(true);
+      }
+    );
+  });
+  const documentChange = vscode.workspace.onDidChangeTextDocument((event) => {
+    const fileId = fileIdByFsPath.get(normalizeFsPath(event.document.uri.fsPath));
+    if (!fileId || event.contentChanges.length === 0) {
+      return;
+    }
+    const functions = functionsByPath.get(fileId) ?? [];
+    const changedFunctions = functions.filter((node) =>
+      event.contentChanges.some((change) =>
+        rangesOverlap(
+          node.range.startLine,
+          node.range.endLine,
+          change.range.start.line,
+          change.range.end.line
+        )
+      )
+    );
+    const changedIds = [fileId, ...changedFunctions.map((node) => node.id)];
+    stateStore.markFileChange(changedIds);
+
+    // The VS Code change event supplies line precision while a hook may only
+    // identify the file. Attribute overlapping functions to agents already
+    // editing that file; otherwise editingAgents intentionally stays empty.
+    for (const agent of agentRegistry.snapshots()) {
+      if (
+        agent.status === 'active'
+        && agent.workAreas.some((area) => area === fileId || area.startsWith(`${fileId}#`))
+      ) {
+        stateStore.startAgentEdit(
+          [fileId, ...changedFunctions.map((node) => node.id)],
+          agent.id
+        );
+      }
+    }
+  });
+
+  const resolveTargets = (
+    event: AgentHookEvent
+  ): { nodeIds: string[]; workArea?: string } => {
+    if (event.type === 'agent_spawn' || event.type === 'agent_done') {
+      return { nodeIds: [] };
+    }
+    let fileId: string | undefined;
+    let exactNode: GraphNode | undefined;
+    if (event.node_id) {
+      exactNode = nodeById.get(event.node_id);
+      fileId = exactNode?.path;
+    }
+    if (!fileId && event.path) {
+      fileId = resolveFileId(event.path, graph.nodes, fileIdByFsPath);
+    }
+    if (!fileId) {
+      return { nodeIds: [], workArea: eventWorkArea(event) };
+    }
+
+    const localFunctions = functionsByPath.get(fileId) ?? [];
+    if (!exactNode && event.symbol) {
+      exactNode = nodeById.get(`${fileId}#${event.symbol}`);
+    }
+    if (!exactNode && event.line) {
+      const line = event.line - 1;
+      exactNode = localFunctions
+        .filter((node) => node.range.startLine <= line && node.range.endLine >= line)
+        .sort((left, right) =>
+          (left.range.endLine - left.range.startLine)
+          - (right.range.endLine - right.range.startLine)
+        )[0];
+    }
+
+    const nodeIds = [fileId];
+    if (exactNode?.kind === 'function') {
+      nodeIds.push(exactNode.id);
+    }
+    if (event.type === 'agent_edit_end') {
+      for (const node of localFunctions) {
+        if (node.editingAgents.includes(event.agent_id)) {
+          nodeIds.push(node.id);
+        }
+      }
+    }
+    return {
+      nodeIds: [...new Set(nodeIds)],
+      workArea: exactNode?.id ?? fileId
+    };
+  };
+
+  // Restore active hook ownership if the canvas was reopened after events
+  // arrived. Raw paths are resolved where possible; unknown paths stay in the
+  // agent sidebar but do not silently mutate an unrelated node.
+  for (const agent of agentRegistry.snapshots()) {
+    if (agent.status !== 'active') {
+      continue;
+    }
+    for (const workArea of agent.workAreas) {
+      const node = nodeById.get(workArea);
+      const fileId = node?.path ?? resolveFileId(workArea, graph.nodes, fileIdByFsPath);
+      if (fileId) {
+        stateStore.startAgentEdit(
+          node?.kind === 'function' ? [fileId, node.id] : [fileId],
+          agent.id
+        );
+      }
+    }
+  }
+
+  return {
+    async handleAgentEvent(event: AgentHookEvent): Promise<void> {
+      const { nodeIds, workArea } = resolveTargets(event);
+      agentRegistry.apply(event, workArea);
+
+      if (event.type === 'agent_edit_start') {
+        stateStore.startAgentEdit(nodeIds, event.agent_id);
+      } else if (event.type === 'agent_edit_end') {
+        stateStore.endAgentEdit(nodeIds, event.agent_id);
+      } else if (event.type === 'agent_done') {
+        stateStore.finishAgent(event.agent_id);
+      } else if (event.type === 'agent_report' && event.level === 'error') {
+        stateStore.addError(nodeIds, 'agent');
+      }
+
+      if (
+        nodeIds.length === 0
+        && (event.type === 'agent_edit_start'
+          || event.type === 'agent_edit_end'
+          || event.type === 'agent_report')
+      ) {
+        output.appendLine(
+          `[agent hook] Accepted ${event.type} for ${event.agent_id}, but could not `
+          + `resolve target ${eventWorkArea(event) ?? '(missing path/node_id)'}.`
+        );
+      } else {
+        output.appendLine(
+          `[agent hook] Processed ${event.type} for ${event.agent_id}`
+          + (workArea ? ` at ${workArea}.` : '.')
+        );
+      }
+      await postState([]);
+    },
+    async postSnapshot(): Promise<void> {
+      await postState(allNodes.map(cloneGraphNode));
+    },
+    dispose(): void {
+      disposed = true;
+      stateStore.dispose();
+      watcherChange.dispose();
+      documentChange.dispose();
+      watcher.dispose();
+    }
+  };
+}
+
+function resolveFileId(
+  candidate: string,
+  files: readonly GraphNode[],
+  fileIdByFsPath: ReadonlyMap<string, string>
+): string | undefined {
+  const absoluteMatch = fileIdByFsPath.get(normalizeFsPath(candidate));
+  if (absoluteMatch) {
+    return absoluteMatch;
+  }
+  const relative = candidate.replaceAll('\\', '/').replace(/^\.\//, '');
+  const matches = files.filter((node) =>
+    node.id === relative
+    || node.path === relative
+    || node.path.endsWith(`/${relative}`)
+  );
+  return matches.length === 1 ? matches[0].id : undefined;
+}
+
+function normalizeFsPath(value: string): string {
+  const normalized = value.replaceAll('\\', '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function rangesOverlap(
+  leftStart: number,
+  leftEnd: number,
+  rightStart: number,
+  rightEnd: number
+): boolean {
+  return leftStart <= rightEnd && rightStart <= leftEnd;
+}
+
+function eventWorkArea(event: AgentHookEvent): string | undefined {
+  if (event.type === 'agent_spawn' || event.type === 'agent_done') {
+    return undefined;
+  }
+  return event.node_id
+    ?? (event.path && event.symbol ? `${event.path}#${event.symbol}` : event.path);
+}
+
+function cloneGraphNode(node: GraphNode): GraphNode {
+  return {
+    ...node,
+    range: { ...node.range },
+    errorSources: [...node.errorSources],
+    editingAgents: [...node.editingAgents],
+    annotation: { ...node.annotation }
   };
 }
 
@@ -479,6 +876,11 @@ function get2dWebviewHtml(
       --neutral: color-mix(in srgb, var(--vscode-descriptionForeground) 70%, #7891a8);
       --panel: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--neutral));
       --panel-strong: color-mix(in srgb, var(--vscode-editor-background) 76%, var(--neutral));
+      --state-editing: var(--vscode-editorWarning-foreground, #cca700);
+      --state-dirty: color-mix(in srgb, var(--state-editing) 58%, #4f4218);
+      --state-error: var(--vscode-errorForeground, #f14c4c);
+      --state-passing: var(--vscode-testing-iconPassed, #73c991);
+      --state-neutral: var(--neutral);
       --dependency-edge: color-mix(in srgb, var(--neutral) 72%, transparent);
       --dependency-edge-strong:
         color-mix(in srgb, var(--neutral) 90%, var(--vscode-foreground));
@@ -590,6 +992,37 @@ function get2dWebviewHtml(
     }
     .file-card.dragging { cursor: grabbing; z-index: 5; }
     .file-card:focus-visible { outline: 2px solid var(--vscode-focusBorder); }
+    .file-card.node-state-editing, .function-card.node-state-editing {
+      border-color: var(--state-editing);
+      animation: editing-flash 820ms ease-in-out infinite alternate;
+    }
+    .file-card.node-state-dirty, .function-card.node-state-dirty {
+      border-color: var(--state-dirty);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-dirty) 45%, transparent),
+        0 4px 13px color-mix(in srgb, #000 26%, transparent);
+    }
+    .file-card.node-state-error, .function-card.node-state-error {
+      border-color: var(--state-error);
+    }
+    .file-card.node-state-passing, .function-card.node-state-passing {
+      border-color: var(--state-passing);
+    }
+    .file-card.node-state-verifying, .function-card.node-state-verifying {
+      border-color: var(--state-neutral);
+    }
+    .file-card.node-conflict, .function-card.node-conflict {
+      outline: 2px dotted var(--vscode-foreground); outline-offset: 2px;
+    }
+    @keyframes editing-flash {
+      from {
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-editing) 35%, transparent),
+          0 3px 10px color-mix(in srgb, #000 25%, transparent);
+      }
+      to {
+        box-shadow: 0 0 0 4px color-mix(in srgb, var(--state-editing) 38%, transparent),
+          0 0 22px color-mix(in srgb, var(--state-editing) 52%, transparent);
+      }
+    }
     .file-title {
       display: grid; grid-template-columns: 20px minmax(0, 1fr) auto;
       align-items: center; gap: 6px;
@@ -626,6 +1059,34 @@ function get2dWebviewHtml(
       color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.45;
       white-space: normal; overflow-wrap: anywhere;
     }
+    .node-state-lamp {
+      position: absolute; z-index: 3; top: 5px; right: 5px;
+      width: 8px; height: 8px; border-radius: 50%;
+      border: 1px solid color-mix(in srgb, var(--vscode-editor-background) 70%, transparent);
+      background: var(--state-neutral);
+    }
+    .node-state-editing .node-state-lamp { background: var(--state-editing); }
+    .node-state-dirty .node-state-lamp { background: var(--state-dirty); }
+    .node-state-error .node-state-lamp { background: var(--state-error); }
+    .node-state-passing .node-state-lamp { background: var(--state-passing); }
+    .agent-badges {
+      position: absolute; z-index: 4; right: 7px; bottom: 6px;
+      display: flex; align-items: center; gap: 4px;
+    }
+    .agent-badge {
+      display: inline-grid; place-items: center; width: 15px; height: 15px;
+      color: #fff; font-size: 8px; font-weight: 800;
+      filter: drop-shadow(0 1px 2px color-mix(in srgb, #000 42%, transparent));
+    }
+    .agent-badge.tone-violet { background: #8b6fd6; }
+    .agent-badge.tone-magenta { background: #b45fae; }
+    .agent-badge.tone-copper { background: #98634f; }
+    .agent-badge.shape-diamond { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+    .agent-badge.shape-hexagon {
+      clip-path: polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0 50%);
+    }
+    .agent-badge.shape-triangle { clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+    .agent-badge.shape-square { border-radius: 2px; }
     .function-card {
       position: absolute; z-index: 7; width: 190px; height: 46px; padding: 7px 9px;
       overflow: hidden; cursor: pointer; user-select: none;
@@ -642,6 +1103,13 @@ function get2dWebviewHtml(
     .function-card.closing { opacity: 0; transform: translateX(-8px) scale(.98); }
     .function-card:hover {
       border-color: color-mix(in srgb, var(--neutral) 55%, var(--vscode-foreground));
+    }
+    .function-card.node-state-editing:hover { border-color: var(--state-editing); }
+    .function-card.node-state-dirty:hover { border-color: var(--state-dirty); }
+    .function-card.node-state-error:hover { border-color: var(--state-error); }
+    .function-card.node-state-passing:hover { border-color: var(--state-passing); }
+    .function-card.node-conflict.selected {
+      outline: 2px dotted var(--vscode-foreground); outline-offset: 2px;
     }
     .function-card.selected {
       outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px;
@@ -714,10 +1182,35 @@ function get2dWebviewHtml(
       color: var(--vscode-descriptionForeground); font-size: 12px;
     }
     #save-status.error { color: var(--vscode-errorForeground); }
+    #agent-panel {
+      margin-top: 18px; padding-top: 14px;
+      border-top: 1px solid var(--vscode-sideBar-border, var(--vscode-widget-border));
+    }
+    #agent-panel h2 { margin-bottom: 8px; }
+    #agent-tree, #agent-tree ul { margin: 0; padding-left: 17px; list-style: none; }
+    #agent-tree { padding-left: 0; }
+    .agent-entry { margin: 5px 0; }
+    .agent-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    .agent-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 650; }
+    .agent-status, .agent-work {
+      color: var(--vscode-descriptionForeground); font-size: 11px;
+    }
+    .agent-work { margin: 2px 0 0 22px; overflow-wrap: anywhere; }
+    #agent-conflicts {
+      margin: 8px 0 0; color: var(--vscode-foreground); font-size: 12px;
+      border-left: 3px dotted var(--vscode-foreground); padding-left: 8px;
+    }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         scroll-behavior: auto !important; animation-duration: .001ms !important;
         animation-iteration-count: 1 !important; transition-duration: .001ms !important;
+      }
+      .file-card.node-state-editing, .function-card.node-state-editing {
+        animation: editing-breathe-reduced 3s ease-in-out infinite !important;
+      }
+      @keyframes editing-breathe-reduced {
+        from { box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-editing) 28%, transparent); }
+        to { box-shadow: 0 0 0 2px color-mix(in srgb, var(--state-editing) 40%, transparent); }
       }
     }
   </style>
@@ -756,6 +1249,10 @@ function get2dWebviewHtml(
       <div class="field"><span class="field-label">Name</span><p id="node-name" class="field-value"></p></div>
       <div class="field"><span class="field-label">Path</span><p id="node-path" class="field-value"></p></div>
       <div class="field"><span class="field-label">Language</span><p id="node-language" class="field-value"></p></div>
+      <div class="field"><span class="field-label">State</span><p id="node-state" class="field-value"></p></div>
+      <div class="field"><span class="field-label">Editing agents</span><p id="node-agents" class="field-value"></p></div>
+      <div class="field"><span class="field-label">Error sources</span><p id="node-errors" class="field-value"></p></div>
+      <div id="node-conflict" class="field" hidden>Potential conflict: multiple agents are editing this node.</div>
       <div class="field">
         <span class="field-label">Automatic annotation</span>
         <p id="auto-annotation" class="field-value"></p>
@@ -770,6 +1267,12 @@ function get2dWebviewHtml(
       </div>
       <div id="save-status" role="status"></div>
     </div>
+    <section id="agent-panel" aria-label="Agent hierarchy">
+      <h2>Agents</h2>
+      <p id="agent-empty" class="field-value">No agent hook events received.</p>
+      <ul id="agent-tree"></ul>
+      <p id="agent-conflicts" hidden></p>
+    </section>
   </aside>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

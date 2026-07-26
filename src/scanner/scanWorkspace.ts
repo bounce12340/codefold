@@ -14,6 +14,7 @@ export interface ScanResult extends FileGraph {
   functionNodes: GraphNode[];
   functionEdges: GraphEdge[];
   unresolvedCalls: number;
+  sourceContents: Record<string, string>;
 }
 
 export interface ScanOptions {
@@ -75,7 +76,8 @@ export async function scanWorkspaceRoot(
     totalFiles: relativePaths.length,
     functionNodes: functionGraph.nodes,
     functionEdges: functionGraph.edges,
-    unresolvedCalls: functionGraph.unresolvedCalls
+    unresolvedCalls: functionGraph.unresolvedCalls,
+    sourceContents: Object.fromEntries(files.map((file) => [file.path, file.content]))
   };
 }
 
