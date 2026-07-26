@@ -1,6 +1,13 @@
 node_modules/
 dist/
 out/
+coverage/
 *.vsix
 .DS_Store
-coverage/
+
+!tests/fixtures/**/node_modules/
+!tests/fixtures/**/node_modules/**
+
+# local-only
+*.bak-*
+.codefold/

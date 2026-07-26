@@ -1,0 +1,52 @@
+{
+  "name": "codefold",
+  "displayName": "CodeFold",
+  "description": "A foldable 2D workspace dependency canvas with an optional 3D showcase.",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization"
+  ],
+  "activationEvents": [
+    "onCommand:codefold.open",
+    "onCommand:codefold.open3d"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codefold.open",
+        "title": "CodeFold: Open"
+      },
+      {
+        "command": "codefold.open3d",
+        "title": "CodeFold: Open 3D View"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "d3-force": "^3.0.0",
+    "d3-force-3d": "^3.0.6",
+    "globby": "^14.1.0",
+    "three": "^0.179.1"
+  },
+  "devDependencies": {
+    "@types/d3-force": "^3.0.10",
+    "@types/node": "^22.10.0",
+    "@types/three": "^0.179.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}
