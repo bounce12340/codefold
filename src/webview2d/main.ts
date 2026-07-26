@@ -14,6 +14,7 @@ import {
   type FolderGroup
 } from '../graph/folders';
 import type {
+  FunctionGraphPayload,
   GraphEdge,
   GraphNode,
   GroupLayout,
@@ -54,6 +55,14 @@ interface VisibleEdge {
   from: string;
   to: string;
   count: number;
+  kind: GraphEdge['kind'];
+}
+
+interface FunctionView {
+  node: GraphNode;
+  groupId: string;
+  position: LayoutPoint;
+  element: HTMLDivElement;
 }
 
 interface EndpointBounds {
@@ -76,6 +85,11 @@ const FILE_WIDTH = 200;
 const FILE_HEIGHT = 100;
 const FILE_GAP_X = 16;
 const FILE_GAP_Y = 16;
+const FUNCTION_WIDTH = 190;
+const FUNCTION_HEIGHT = 46;
+const FUNCTION_GAP = 10;
+const FUNCTION_PANEL_GAP = 24;
+const FUNCTION_PANEL_COLUMNS = 3;
 const GROUP_PADDING = 14;
 const GROUP_HEADER_HEIGHT = 48;
 const MIN_SCALE = 0.12;
@@ -110,8 +124,14 @@ let graph: WebviewGraph | undefined;
 let groups: GroupView[] = [];
 let groupById = new Map<string, GroupView>();
 let fileById = new Map<string, GraphNode>();
+let functionById = new Map<string, GraphNode>();
+let functionEdges = new Map<string, GraphEdge>();
+let functionViews = new Map<string, FunctionView>();
+const loadedFunctionFiles = new Set<string>();
+const loadingFunctionFiles = new Set<string>();
+const expandedFunctionFiles = new Set<string>();
 let folderByFileId = new Map<string, string>();
-let selectedFileId: string | undefined;
+let selectedNodeId: string | undefined;
 const annotationSaves = new AnnotationSaveTracker();
 let camera = { x: 0, y: 0, scale: 1 };
 let edgeFrame: number | undefined;
@@ -148,6 +168,10 @@ function receiveExtensionMessage(event: MessageEvent<unknown>): void {
     renderGraph(event.data.graph);
     return;
   }
+  if (event.data.type === 'functions') {
+    applyFunctionPayload(event.data.payload);
+    return;
+  }
   if (event.data.type === 'annotationSaved') {
     applySavedAnnotation(event.data.nodeId, event.data.manual);
     return;
@@ -162,7 +186,7 @@ function receiveExtensionMessage(event: MessageEvent<unknown>): void {
     return;
   }
   annotationSaves.fail(event.data.nodeId);
-  if (selectedFileId === event.data.nodeId) {
+  if (selectedNodeId === event.data.nodeId) {
     saveAnnotationButton.disabled = false;
     saveStatus.textContent = `Save failed: ${event.data.message}`;
     saveStatus.classList.add('error');
@@ -201,11 +225,19 @@ function renderGraph(nextGraph: WebviewGraph): void {
     }
   }
 
-  status.textContent =
-    `${groups.length} folders · ${nextGraph.nodes.length} files · ${nextGraph.edges.length} imports`;
+  status.textContent = `${groups.length} folders · ${nextGraph.nodes.length} files · `
+    + `${nextGraph.totalFunctions} functions · ${nextGraph.edges.length} imports`;
+  const warnings: string[] = [];
   if (nextGraph.truncated) {
-    warning.textContent =
-      `Large workspace: showing the first 2,000 of ${nextGraph.totalFiles} supported files.`;
+    warnings.push(
+      `showing the first 2,000 of ${nextGraph.totalFiles} supported files`
+    );
+  }
+  if (nextGraph.totalFunctions > 2_000) {
+    warnings.push('function layer is supplied lazily when a file arrow is expanded');
+  }
+  if (warnings.length > 0) {
+    warning.textContent = `Large workspace: ${warnings.join('; ')}.`;
     warning.hidden = false;
   } else {
     warning.hidden = true;
@@ -375,6 +407,7 @@ function toggleGroup(group: GroupView): void {
   if (group.expanded) {
     renderGroupFiles(group);
   } else {
+    clearGroupFunctionViews(group.group.id);
     group.filesElement.replaceChildren();
   }
   const header = requireDescendant<HTMLButtonElement>(
@@ -388,13 +421,30 @@ function toggleGroup(group: GroupView): void {
 
 function updateGroupGeometry(group: GroupView): void {
   if (group.expanded) {
-    const columns = fileGridColumns(group.group.files.length);
-    const rows = Math.ceil(group.group.files.length / columns);
-    group.width =
-      GROUP_PADDING * 2 + columns * FILE_WIDTH + Math.max(0, columns - 1) * FILE_GAP_X;
-    group.height =
-      GROUP_HEADER_HEIGHT + GROUP_PADDING + rows * FILE_HEIGHT
-      + Math.max(0, rows - 1) * FILE_GAP_Y + GROUP_PADDING;
+    const base = baseGroupDimensions(group);
+    group.width = base.width;
+    group.height = base.height;
+    for (const [fileIndex, file] of group.group.files.entries()) {
+      if (!expandedFunctionFiles.has(file.id)) {
+        continue;
+      }
+      const functionCount = graph?.functionCounts[file.id] ?? 0;
+      if (functionCount === 0) {
+        continue;
+      }
+      const panel = functionPanelPosition(group, fileIndex);
+      group.width = Math.max(
+        group.width,
+        panel.x + FUNCTION_WIDTH + GROUP_PADDING
+      );
+      group.height = Math.max(
+        group.height,
+        panel.y
+          + functionCount * FUNCTION_HEIGHT
+          + Math.max(0, functionCount - 1) * FUNCTION_GAP
+          + GROUP_PADDING
+      );
+    }
   } else {
     group.width = COLLAPSED_WIDTH;
     group.height = COLLAPSED_HEIGHT;
@@ -406,8 +456,10 @@ function updateGroupGeometry(group: GroupView): void {
 }
 
 function renderGroupFiles(group: GroupView): void {
+  clearGroupFunctionViews(group.group.id);
   group.filesElement.replaceChildren();
   const columns = fileGridColumns(group.group.files.length);
+  const fileBounds = baseGroupDimensions(group);
   for (const [index, file] of group.group.files.entries()) {
     const defaultPosition = {
       x: GROUP_PADDING + (index % columns) * (FILE_WIDTH + FILE_GAP_X),
@@ -415,15 +467,64 @@ function renderGroupFiles(group: GroupView): void {
         + Math.floor(index / columns) * (FILE_HEIGHT + FILE_GAP_Y)
     };
     const position = group.filePositions.get(file.id) ?? defaultPosition;
-    position.x = clamp(position.x, GROUP_PADDING, group.width - FILE_WIDTH - GROUP_PADDING);
+    position.x = clamp(
+      position.x,
+      GROUP_PADDING,
+      fileBounds.width - FILE_WIDTH - GROUP_PADDING
+    );
     position.y = clamp(
       position.y,
       GROUP_HEADER_HEIGHT + GROUP_PADDING,
-      group.height - FILE_HEIGHT - GROUP_PADDING
+      fileBounds.height - FILE_HEIGHT - GROUP_PADDING
     );
     group.filePositions.set(file.id, position);
     group.filesElement.append(createFileCard(group, file, position));
   }
+  for (const file of group.group.files) {
+    if (expandedFunctionFiles.has(file.id) && loadedFunctionFiles.has(file.id)) {
+      renderFileFunctions(group, file.id);
+    }
+  }
+}
+
+function baseGroupDimensions(group: GroupView): { width: number; height: number } {
+  const columns = fileGridColumns(group.group.files.length);
+  const rows = Math.ceil(group.group.files.length / columns);
+  return {
+    width:
+      GROUP_PADDING * 2 + columns * FILE_WIDTH
+      + Math.max(0, columns - 1) * FILE_GAP_X,
+    height:
+      GROUP_HEADER_HEIGHT + GROUP_PADDING + rows * FILE_HEIGHT
+      + Math.max(0, rows - 1) * FILE_GAP_Y + GROUP_PADDING
+  };
+}
+
+function functionPanelPosition(
+  group: GroupView,
+  fileIndex: number
+): LayoutPoint {
+  const base = baseGroupDimensions(group);
+  const panelColumn = fileIndex % FUNCTION_PANEL_COLUMNS;
+  const panelRow = Math.floor(fileIndex / FUNCTION_PANEL_COLUMNS);
+  let y = GROUP_HEADER_HEIGHT + GROUP_PADDING;
+  for (let row = 0; row < panelRow; row += 1) {
+    let rowFunctionCount = 0;
+    for (let column = 0; column < FUNCTION_PANEL_COLUMNS; column += 1) {
+      const file = group.group.files[row * FUNCTION_PANEL_COLUMNS + column];
+      rowFunctionCount = Math.max(
+        rowFunctionCount,
+        file === undefined ? 0 : (graph?.functionCounts[file.id] ?? 0)
+      );
+    }
+    y += Math.max(1, rowFunctionCount) * (FUNCTION_HEIGHT + FUNCTION_GAP)
+      + FUNCTION_GAP;
+  }
+  return {
+    x: base.width + FUNCTION_PANEL_GAP
+      + panelColumn * (FUNCTION_WIDTH + FUNCTION_GAP),
+    y
+  };
 }
 
 function createFileCard(
@@ -438,9 +539,25 @@ function createFileCard(
   card.setAttribute('role', 'button');
   card.setAttribute('aria-label', `${file.name}, ${file.lang}, ${file.path}`);
   card.innerHTML =
-    `<div class="file-title"><span class="file-name"></span>`
+    `<div class="file-title"><button class="file-function-toggle" type="button">▸</button>`
+    + `<span class="file-name"></span>`
     + `<span class="language-badge"></span></div>`
     + `<div class="file-annotation"></div>`;
+  const functionToggle = requireDescendant<HTMLButtonElement>(
+    card,
+    '.file-function-toggle'
+  );
+  const functionCount = graph?.functionCounts[file.id] ?? 0;
+  functionToggle.disabled = functionCount === 0;
+  functionToggle.setAttribute('aria-label', `Expand functions in ${file.name}`);
+  updateFileFunctionToggle(functionToggle, file.id);
+  for (const eventName of ['pointerdown', 'dblclick'] as const) {
+    functionToggle.addEventListener(eventName, (event) => event.stopPropagation());
+  }
+  functionToggle.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleFileFunctions(group, file.id);
+  });
   requireDescendant<HTMLElement>(card, '.file-name').textContent = file.name;
   requireDescendant<HTMLElement>(card, '.language-badge').textContent = file.lang;
   updateFileCardContent(card, file);
@@ -477,15 +594,16 @@ function createFileCard(
       card.classList.add('dragging');
       tooltip.hidden = true;
     }
+    const fileBounds = baseGroupDimensions(group);
     position.x = clamp(
       drag.originalX + dx,
       GROUP_PADDING,
-      group.width - FILE_WIDTH - GROUP_PADDING
+      fileBounds.width - FILE_WIDTH - GROUP_PADDING
     );
     position.y = clamp(
       drag.originalY + dy,
       GROUP_HEADER_HEIGHT + GROUP_PADDING,
-      group.height - FILE_HEIGHT - GROUP_PADDING
+      fileBounds.height - FILE_HEIGHT - GROUP_PADDING
     );
     positionFileCard(card, position);
     scheduleEdges();
@@ -512,7 +630,7 @@ function createFileCard(
       moved = false;
       return;
     }
-    selectFile(file.id);
+    selectNode(file.id);
   });
   card.addEventListener('dblclick', () => {
     vscode.postMessage({ type: 'openFile', nodeId: file.id });
@@ -522,10 +640,218 @@ function createFileCard(
       vscode.postMessage({ type: 'openFile', nodeId: file.id });
     } else if (event.key === ' ') {
       event.preventDefault();
-      selectFile(file.id);
+      selectNode(file.id);
     }
   });
   return card;
+}
+
+function toggleFileFunctions(group: GroupView, fileId: string): void {
+  if ((graph?.functionCounts[fileId] ?? 0) === 0) {
+    return;
+  }
+  if (expandedFunctionFiles.has(fileId)) {
+    expandedFunctionFiles.delete(fileId);
+    for (const view of functionViews.values()) {
+      if (view.node.path === fileId) {
+        view.element.classList.add('closing');
+      }
+    }
+    updateGroupGeometry(group);
+    updateFileFunctionToggleForCard(fileId);
+    drawEdges();
+    window.setTimeout(
+      () => {
+        if (!expandedFunctionFiles.has(fileId)) {
+          clearFileFunctionViews(fileId);
+        }
+      },
+      reducedMotion() ? 0 : 180
+    );
+    return;
+  }
+
+  expandedFunctionFiles.add(fileId);
+  updateGroupGeometry(group);
+  updateFileFunctionToggleForCard(fileId);
+  if (!loadedFunctionFiles.has(fileId)) {
+    if (loadingFunctionFiles.has(fileId)) {
+      return;
+    }
+    loadingFunctionFiles.add(fileId);
+    updateFileFunctionToggleForCard(fileId);
+    vscode.postMessage({ type: 'loadFunctions', fileId });
+    return;
+  }
+  if (group.expanded) {
+    renderFileFunctions(group, fileId);
+  }
+  drawEdges();
+}
+
+function applyFunctionPayload(payload: FunctionGraphPayload): void {
+  if (!fileById.has(payload.fileId)) {
+    layoutWarning.textContent =
+      `Function data arrived for an unknown file: ${payload.fileId}`;
+    layoutWarning.hidden = false;
+    return;
+  }
+  for (const node of payload.nodes) {
+    functionById.set(node.id, node);
+  }
+  for (const edge of payload.edges) {
+    functionEdges.set(graphEdgeKey(edge), edge);
+  }
+  loadedFunctionFiles.add(payload.fileId);
+  loadingFunctionFiles.delete(payload.fileId);
+  updateFileFunctionToggleForCard(payload.fileId);
+  const groupId = folderByFileId.get(payload.fileId);
+  const group = groupId === undefined ? undefined : groupById.get(groupId);
+  if (
+    group !== undefined
+    && group.expanded
+    && expandedFunctionFiles.has(payload.fileId)
+  ) {
+    updateGroupGeometry(group);
+    renderFileFunctions(group, payload.fileId);
+  }
+  drawEdges();
+}
+
+function updateFileFunctionToggleForCard(fileId: string): void {
+  const card = nodeLayer.querySelector<HTMLElement>(
+    `.file-card[data-node-id="${escapeSelector(fileId)}"]`
+  );
+  if (card === null) {
+    return;
+  }
+  updateFileFunctionToggle(
+    requireDescendant<HTMLButtonElement>(card, '.file-function-toggle'),
+    fileId
+  );
+}
+
+function updateFileFunctionToggle(
+  toggle: HTMLButtonElement,
+  fileId: string
+): void {
+  const expanded = expandedFunctionFiles.has(fileId);
+  const loading = loadingFunctionFiles.has(fileId);
+  toggle.classList.toggle('expanded', expanded);
+  toggle.classList.toggle('loading', loading);
+  toggle.setAttribute('aria-expanded', String(expanded));
+  toggle.title = loading
+    ? 'Loading functions…'
+    : `${expanded ? 'Collapse' : 'Expand'} functions`;
+}
+
+function renderFileFunctions(group: GroupView, fileId: string): void {
+  clearFileFunctionViews(fileId);
+  const fileIndex = group.group.files.findIndex((file) => file.id === fileId);
+  if (fileIndex < 0) {
+    return;
+  }
+  const nodes = [...functionById.values()]
+    .filter((node) => node.path === fileId)
+    .sort((left, right) =>
+      left.range.startLine - right.range.startLine || left.name.localeCompare(right.name)
+    );
+  const panel = functionPanelPosition(group, fileIndex);
+  for (const [index, node] of nodes.entries()) {
+    const position = {
+      x: panel.x,
+      y: panel.y + index * (FUNCTION_HEIGHT + FUNCTION_GAP)
+    };
+    const element = createFunctionCard(node, position);
+    group.filesElement.append(element);
+    functionViews.set(node.id, {
+      node,
+      groupId: group.group.id,
+      position,
+      element
+    });
+    requestAnimationFrame(() => element.classList.add('visible'));
+  }
+}
+
+function createFunctionCard(
+  node: GraphNode,
+  position: LayoutPoint
+): HTMLDivElement {
+  const card = document.createElement('div');
+  card.className = 'function-card';
+  card.dataset.nodeId = node.id;
+  card.tabIndex = 0;
+  card.setAttribute('role', 'button');
+  card.setAttribute(
+    'aria-label',
+    `${node.name}, lines ${node.range.startLine + 1} to ${node.range.endLine + 1}`
+  );
+  card.style.left = `${position.x}px`;
+  card.style.top = `${position.y}px`;
+  card.innerHTML =
+    `<div class="function-name"></div><div class="function-range"></div>`;
+  requireDescendant<HTMLElement>(card, '.function-name').textContent = node.name;
+  requireDescendant<HTMLElement>(card, '.function-range').textContent =
+    `lines ${node.range.startLine + 1}–${node.range.endLine + 1}`;
+  card.addEventListener('click', (event) => {
+    event.stopPropagation();
+    selectNode(node.id);
+  });
+  card.addEventListener('dblclick', (event) => {
+    event.stopPropagation();
+    vscode.postMessage({ type: 'openFile', nodeId: node.id });
+  });
+  card.addEventListener('pointerenter', (event) => showFunctionTooltip(event, node));
+  card.addEventListener('pointermove', (event) => showFunctionTooltip(event, node));
+  card.addEventListener('pointerleave', () => {
+    tooltip.hidden = true;
+  });
+  card.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      vscode.postMessage({ type: 'openFile', nodeId: node.id });
+    } else if (event.key === ' ') {
+      event.preventDefault();
+      selectNode(node.id);
+    }
+  });
+  return card;
+}
+
+function showFunctionTooltip(event: PointerEvent, node: GraphNode): void {
+  tooltip.textContent =
+    `${node.path}#${node.name}\nlines ${node.range.startLine + 1}–${node.range.endLine + 1}`;
+  tooltip.hidden = false;
+  const maxLeft = window.innerWidth - tooltip.offsetWidth - 12;
+  const maxTop = window.innerHeight - tooltip.offsetHeight - 12;
+  tooltip.style.left = `${Math.max(8, Math.min(maxLeft, event.clientX + 14))}px`;
+  tooltip.style.top = `${Math.max(8, Math.min(maxTop, event.clientY + 14))}px`;
+}
+
+function clearFileFunctionViews(fileId: string): void {
+  for (const [nodeId, view] of functionViews) {
+    if (view.node.path === fileId) {
+      view.element.remove();
+      functionViews.delete(nodeId);
+    }
+  }
+}
+
+function clearGroupFunctionViews(groupId: string): void {
+  for (const [nodeId, view] of functionViews) {
+    if (view.groupId === groupId) {
+      view.element.remove();
+      functionViews.delete(nodeId);
+    }
+  }
+}
+
+function reducedMotion(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function graphEdgeKey(edge: GraphEdge): string {
+  return `${edge.kind}\0${edge.from}\0${edge.to}`;
 }
 
 function positionFileCard(card: HTMLElement, position: LayoutPoint): void {
@@ -548,27 +874,33 @@ function showFileTooltip(event: PointerEvent, file: GraphNode): void {
   tooltip.style.top = `${Math.max(8, Math.min(maxTop, event.clientY + 14))}px`;
 }
 
-function selectFile(nodeId: string): void {
-  selectedFileId = nodeId;
+function selectNode(nodeId: string): void {
+  selectedNodeId = nodeId;
   for (const card of Array.from(
-    nodeLayer.querySelectorAll<HTMLElement>('.file-card')
+    nodeLayer.querySelectorAll<HTMLElement>('.file-card, .function-card')
   )) {
     card.classList.toggle('selected', card.dataset.nodeId === nodeId);
   }
-  const file = fileById.get(nodeId);
-  if (file === undefined) {
+  const node = fileById.get(nodeId) ?? functionById.get(nodeId);
+  if (node === undefined) {
     return;
   }
+  const isFile = node.kind === 'file';
   sidebarEmpty.hidden = true;
   nodeDetails.hidden = false;
-  nodeName.textContent = file.name;
-  nodePath.textContent = file.path;
-  nodeLanguage.textContent = file.lang;
-  autoAnnotation.textContent = file.annotation.auto ?? 'No automatic annotation.';
-  manualAnnotation.value = file.annotation.manual ?? '';
+  nodeName.textContent = node.name;
+  nodePath.textContent = node.path;
+  nodeLanguage.textContent = node.lang;
+  autoAnnotation.textContent = isFile
+    ? (node.annotation.auto ?? 'No automatic annotation.')
+    : `Source lines ${node.range.startLine + 1}–${node.range.endLine + 1}`;
+  manualAnnotation.value = isFile ? (node.annotation.manual ?? '') : '';
+  manualAnnotation.disabled = !isFile;
   const savePending = annotationSaves.isPending(nodeId);
-  saveAnnotationButton.disabled = savePending;
-  saveStatus.textContent = savePending
+  saveAnnotationButton.disabled = !isFile || savePending;
+  saveStatus.textContent = !isFile
+    ? 'Function annotations are read-only in Phase 1.'
+    : savePending
     ? (
       annotationSaves.hasNewerPendingDraft(nodeId)
         ? 'Saving previous version; newer changes are still unsaved.'
@@ -579,18 +911,18 @@ function selectFile(nodeId: string): void {
 }
 
 function previewManualAnnotation(): void {
-  if (selectedFileId === undefined) {
+  if (selectedNodeId === undefined) {
     return;
   }
-  const file = fileById.get(selectedFileId);
+  const file = fileById.get(selectedNodeId);
   if (file === undefined) {
     return;
   }
   file.annotation.manual =
     manualAnnotation.value.trim().length === 0 ? null : manualAnnotation.value;
-  annotationSaves.setDraft(selectedFileId, manualAnnotation.value);
+  annotationSaves.setDraft(selectedNodeId, manualAnnotation.value);
   const card = nodeLayer.querySelector<HTMLElement>(
-    `.file-card[data-node-id="${escapeSelector(selectedFileId)}"]`
+    `.file-card[data-node-id="${escapeSelector(selectedNodeId)}"]`
   );
   if (card !== null) {
     updateFileCardContent(card, file);
@@ -600,10 +932,10 @@ function previewManualAnnotation(): void {
 }
 
 function saveSelectedAnnotation(): void {
-  if (selectedFileId === undefined) {
+  if (selectedNodeId === undefined || !fileById.has(selectedNodeId)) {
     return;
   }
-  if (!annotationSaves.begin(selectedFileId, manualAnnotation.value)) {
+  if (!annotationSaves.begin(selectedNodeId, manualAnnotation.value)) {
     saveAnnotationButton.disabled = true;
     saveStatus.textContent = 'A save is already in progress for this file.';
     return;
@@ -613,14 +945,14 @@ function saveSelectedAnnotation(): void {
   saveStatus.classList.remove('error');
   vscode.postMessage({
     type: 'saveAnnotation',
-    nodeId: selectedFileId,
+    nodeId: selectedNodeId,
     manual: manualAnnotation.value
   });
 }
 
 function openSelectedFile(): void {
-  if (selectedFileId !== undefined) {
-    vscode.postMessage({ type: 'openFile', nodeId: selectedFileId });
+  if (selectedNodeId !== undefined) {
+    vscode.postMessage({ type: 'openFile', nodeId: selectedNodeId });
   }
 }
 
@@ -639,7 +971,7 @@ function applySavedAnnotation(nodeId: string, manual: string | null): void {
       updateFileCardContent(card, file);
     }
   }
-  if (selectedFileId === nodeId) {
+  if (selectedNodeId === nodeId) {
     if (!hasNewerDraft) {
       manualAnnotation.value = manual ?? '';
     }
@@ -656,7 +988,10 @@ function drawEdges(): void {
     return;
   }
   clearEdgeGraphics();
-  const edges = visibleEdges(graph.edges);
+  const edges = visibleEdges([
+    ...graph.edges,
+    ...functionEdges.values()
+  ]);
   const edgeKeys = new Set(edges.map((edge) => edgeKey(edge.from, edge.to)));
   for (const visibleEdge of edges) {
     const source = endpointBounds(visibleEdge.from);
@@ -681,7 +1016,15 @@ function drawEdges(): void {
       + `${geometry.targetControl.x} ${geometry.targetControl.y}, `
       + `${geometry.end.x} ${geometry.end.y}`
     );
-    path.setAttribute('class', visibleEdge.count > 1 ? 'dependency aggregate' : 'dependency');
+    path.setAttribute(
+      'class',
+      [
+        'dependency',
+        visibleEdge.kind,
+        visibleEdge.kind === 'import' ? '' : 'phase1-edge',
+        visibleEdge.count > 1 ? 'aggregate' : ''
+      ].filter(Boolean).join(' ')
+    );
     path.setAttribute('marker-end', 'url(#dependency-arrow)');
     path.setAttribute(
       'stroke-width',
@@ -713,36 +1056,89 @@ function drawEdges(): void {
 function visibleEdges(edges: readonly GraphEdge[]): VisibleEdge[] {
   const counts = new Map<string, VisibleEdge>();
   for (const edge of edges) {
-    if (edge.kind !== 'import') {
+    let source: string | undefined;
+    let target: string | undefined;
+    if (edge.kind === 'import') {
+      const sourceGroupId = folderByFileId.get(edge.from);
+      const targetGroupId = folderByFileId.get(edge.to);
+      const sourceGroup = sourceGroupId === undefined
+        ? undefined
+        : groupById.get(sourceGroupId);
+      const targetGroup = targetGroupId === undefined
+        ? undefined
+        : groupById.get(targetGroupId);
+      if (
+        sourceGroupId === undefined
+        || targetGroupId === undefined
+        || sourceGroup === undefined
+        || targetGroup === undefined
+        || (sourceGroupId === targetGroupId && !sourceGroup.expanded)
+      ) {
+        continue;
+      }
+      source = sourceGroup.expanded ? edge.from : sourceGroupId;
+      target = targetGroup.expanded ? edge.to : targetGroupId;
+    } else if (edge.kind === 'contains') {
+      if (
+        !expandedFunctionFiles.has(edge.from)
+        || !groupForFile(edge.from)?.expanded
+        || !functionViews.has(edge.to)
+      ) {
+        continue;
+      }
+      source = edge.from;
+      target = edge.to;
+    } else {
+      const sourceNode = functionById.get(edge.from);
+      const targetNode = functionById.get(edge.to);
+      if (
+        sourceNode === undefined
+        || targetNode === undefined
+        || (
+          !expandedFunctionFiles.has(sourceNode.path)
+          && !expandedFunctionFiles.has(targetNode.path)
+        )
+      ) {
+        continue;
+      }
+      source = functionEndpointId(sourceNode);
+      target = functionEndpointId(targetNode);
+    }
+    if (source === undefined || target === undefined || source === target) {
       continue;
     }
-    const sourceGroupId = folderByFileId.get(edge.from);
-    const targetGroupId = folderByFileId.get(edge.to);
-    if (sourceGroupId === undefined || targetGroupId === undefined) {
-      continue;
-    }
-    const sourceGroup = groupById.get(sourceGroupId);
-    const targetGroup = groupById.get(targetGroupId);
-    if (sourceGroup === undefined || targetGroup === undefined) {
-      continue;
-    }
-    if (sourceGroupId === targetGroupId && !sourceGroup.expanded) {
-      continue;
-    }
-    const source = sourceGroup.expanded ? edge.from : sourceGroupId;
-    const target = targetGroup.expanded ? edge.to : targetGroupId;
-    if (source === target) {
-      continue;
-    }
-    const key = edgeKey(source, target);
+    const key = `${edge.kind}\0${edgeKey(source, target)}`;
     const existing = counts.get(key);
     if (existing === undefined) {
-      counts.set(key, { from: source, to: target, count: 1 });
+      counts.set(key, {
+        from: source,
+        to: target,
+        count: 1,
+        kind: edge.kind
+      });
     } else {
       existing.count += 1;
     }
   }
   return [...counts.values()];
+}
+
+function functionEndpointId(node: GraphNode): string | undefined {
+  const group = groupForFile(node.path);
+  if (group === undefined) {
+    return undefined;
+  }
+  if (!group.expanded) {
+    return group.group.id;
+  }
+  return expandedFunctionFiles.has(node.path) && functionViews.has(node.id)
+    ? node.id
+    : node.path;
+}
+
+function groupForFile(fileId: string): GroupView | undefined {
+  const groupId = folderByFileId.get(fileId);
+  return groupId === undefined ? undefined : groupById.get(groupId);
 }
 
 function endpointBounds(id: string): EndpointBounds | undefined {
@@ -753,6 +1149,19 @@ function endpointBounds(id: string): EndpointBounds | undefined {
       y: group.y + group.height / 2,
       halfWidth: group.width / 2,
       halfHeight: group.height / 2
+    };
+  }
+  const functionView = functionViews.get(id);
+  if (functionView !== undefined) {
+    const parent = groupById.get(functionView.groupId);
+    if (parent === undefined || !parent.expanded) {
+      return undefined;
+    }
+    return {
+      x: parent.x + functionView.position.x + FUNCTION_WIDTH / 2,
+      y: parent.y + functionView.position.y + FUNCTION_HEIGHT / 2,
+      halfWidth: FUNCTION_WIDTH / 2,
+      halfHeight: FUNCTION_HEIGHT / 2
     };
   }
   const groupId = folderByFileId.get(id);
@@ -1007,9 +1416,16 @@ function clearGraph(): void {
   groups = [];
   groupById.clear();
   fileById.clear();
+  functionById.clear();
+  functionEdges.clear();
+  functionViews.clear();
+  loadedFunctionFiles.clear();
+  loadingFunctionFiles.clear();
+  expandedFunctionFiles.clear();
   folderByFileId.clear();
-  selectedFileId = undefined;
+  selectedNodeId = undefined;
   annotationSaves.clear();
+  manualAnnotation.disabled = false;
   sidebarEmpty.hidden = false;
   nodeDetails.hidden = true;
   tooltip.hidden = true;
@@ -1070,6 +1486,7 @@ function isExtensionMessage(
   value: unknown
 ): value is
   | { type: 'graph'; graph: WebviewGraph }
+  | { type: 'functions'; payload: FunctionGraphPayload }
   | { type: 'error'; message: string }
   | { type: 'annotationSaved'; nodeId: string; manual: string | null }
   | { type: 'annotationSaveError'; nodeId: string; message: string }
@@ -1081,6 +1498,19 @@ function isExtensionMessage(
   const type = (value as { type: unknown }).type;
   if (type === 'graph') {
     return 'graph' in value;
+  }
+  if (type === 'functions' && 'payload' in value) {
+    const payload = value.payload;
+    return (
+      typeof payload === 'object'
+      && payload !== null
+      && 'fileId' in payload
+      && typeof payload.fileId === 'string'
+      && 'nodes' in payload
+      && Array.isArray(payload.nodes)
+      && 'edges' in payload
+      && Array.isArray(payload.edges)
+    );
   }
   if (type === 'layoutSaved') {
     return true;

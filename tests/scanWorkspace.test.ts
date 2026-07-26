@@ -88,6 +88,14 @@ describe('workspace scanning', () => {
     expect(
       result.nodes.find((node) => node.id === 'src/util.ts')?.annotation
     ).toEqual({ auto: null, manual: null });
+    expect(result.functionNodes.map((node) => node.id)).toEqual([
+      'src/feature.ts#feature'
+    ]);
+    expect(result.functionEdges).toContainEqual({
+      from: 'src/feature.ts',
+      to: 'src/feature.ts#feature',
+      kind: 'contains'
+    });
   });
 
   it('returns a stable first-page truncation signal', async () => {

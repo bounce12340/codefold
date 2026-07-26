@@ -38,7 +38,11 @@
     "d3-force": "^3.0.0",
     "d3-force-3d": "^3.0.6",
     "globby": "^14.1.0",
-    "three": "^0.179.1"
+    "three": "^0.179.1",
+    "tree-sitter-javascript": "^0.25.0",
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-typescript": "^0.23.2",
+    "web-tree-sitter": "^0.26.11"
   },
   "devDependencies": {
     "@types/d3-force": "^3.0.10",

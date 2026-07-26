@@ -2,7 +2,8 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { globby } from 'globby';
 import { buildFileGraph } from './imports';
-import type { FileGraph, SourceFile } from './model';
+import { buildFunctionGraph } from './functions/functionGraph';
+import type { FileGraph, GraphEdge, GraphNode, SourceFile } from './model';
 import { readWorkspaceNotes, type WorkspaceNotes } from './notes';
 
 const SOURCE_GLOBS = ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.py'];
@@ -10,11 +11,16 @@ const SOURCE_GLOBS = ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.py'];
 export interface ScanResult extends FileGraph {
   truncated: boolean;
   totalFiles: number;
+  functionNodes: GraphNode[];
+  functionEdges: GraphEdge[];
+  unresolvedCalls: number;
 }
 
 export interface ScanOptions {
   maxFiles?: number;
   onError?: (message: string) => void;
+  includeFunctions?: boolean;
+  wasmDirectory?: string;
 }
 
 export async function scanWorkspaceRoot(
@@ -57,10 +63,19 @@ export async function scanWorkspaceRoot(
   }
 
   const graph = buildFileGraph(files, onError, manualAnnotations);
+  const functionGraph = options.includeFunctions === false
+    ? { nodes: [], edges: [], unresolvedCalls: 0 }
+    : await buildFunctionGraph(files, {
+      wasmDirectory: options.wasmDirectory,
+      onDiagnostic: onError
+    });
   return {
     ...graph,
     truncated: relativePaths.length > maxFiles,
-    totalFiles: relativePaths.length
+    totalFiles: relativePaths.length,
+    functionNodes: functionGraph.nodes,
+    functionEdges: functionGraph.edges,
+    unresolvedCalls: functionGraph.unresolvedCalls
   };
 }
 

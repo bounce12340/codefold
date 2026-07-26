@@ -1,4 +1,6 @@
 import * as esbuild from 'esbuild';
+import { copyFile, mkdir } from 'node:fs/promises';
+import path from 'node:path';
 
 const watch = process.argv.includes('--watch');
 const shared = {
@@ -33,10 +35,35 @@ const builds = [
   },
 ];
 
+async function copyTreeSitterWasm() {
+  const outputDirectory = path.resolve('dist', 'tree-sitter');
+  await mkdir(outputDirectory, { recursive: true });
+  const assets = [
+    ['node_modules/web-tree-sitter/web-tree-sitter.wasm', 'web-tree-sitter.wasm'],
+    [
+      'node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm',
+      'typescript.wasm'
+    ],
+    ['node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm', 'tsx.wasm'],
+    [
+      'node_modules/tree-sitter-javascript/tree-sitter-javascript.wasm',
+      'javascript.wasm'
+    ],
+    ['node_modules/tree-sitter-python/tree-sitter-python.wasm', 'python.wasm']
+  ];
+  await Promise.all(assets.map(([source, target]) =>
+    copyFile(path.resolve(source), path.join(outputDirectory, target))
+  ));
+}
+
 if (watch) {
+  await copyTreeSitterWasm();
   const contexts = await Promise.all(builds.map((options) => esbuild.context(options)));
   await Promise.all(contexts.map((context) => context.watch()));
   console.log('CodeFold bundles are being watched.');
 } else {
-  await Promise.all(builds.map((options) => esbuild.build(options)));
+  await Promise.all([
+    ...builds.map((options) => esbuild.build(options)),
+    copyTreeSitterWasm()
+  ]);
 }

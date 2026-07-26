@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type {
+  FunctionGraphPayload,
   GraphEdge,
   GraphNode,
   WebviewGraph,
@@ -62,7 +63,10 @@ function registerGraphCommand(
     receiveSubscription?.dispose();
     let ready = false;
     let pendingGraph: WebviewGraph | undefined;
+    let pendingFunctionNodes: GraphNode[] = [];
+    let pendingFunctionEdges: GraphEdge[] = [];
     let fileUris = new Map<string, vscode.Uri>();
+    let functionStartLines = new Map<string, number>();
     let noteTargets = new Map<string, NoteTarget>();
     let layoutRoot: string | undefined;
     receiveSubscription = panel.webview.onDidReceiveMessage(
@@ -76,6 +80,40 @@ function registerGraphCommand(
           if (pendingGraph !== undefined) {
             await panel.webview.postMessage({ type: 'graph', graph: pendingGraph });
           }
+          return;
+        }
+        if (message.type === 'loadFunctions') {
+          if (mode !== '2d' || pendingGraph === undefined) {
+            output.appendLine(
+              `Ignored a function request before the 2D graph was ready: ${message.fileId}`
+            );
+            return;
+          }
+          const localNodes = pendingFunctionNodes.filter(
+            (node) => node.path === message.fileId
+          );
+          const localIds = new Set(localNodes.map((node) => node.id));
+          const edges = pendingFunctionEdges.filter((edge) =>
+            (edge.kind === 'contains' && edge.from === message.fileId)
+            || (
+              edge.kind === 'call'
+              && (localIds.has(edge.from) || localIds.has(edge.to))
+            )
+          );
+          const relatedIds = new Set(
+            edges.flatMap((edge) => [edge.from, edge.to])
+          );
+          const payload: FunctionGraphPayload = {
+            fileId: message.fileId,
+            nodes: pendingFunctionNodes.filter(
+              (node) => localIds.has(node.id) || relatedIds.has(node.id)
+            ),
+            edges
+          };
+          await panel.webview.postMessage({ type: 'functions', payload });
+          output.appendLine(
+            `Supplied ${localNodes.length} lazy function nodes for ${message.fileId}.`
+          );
           return;
         }
         if (message.type === 'saveLayout') {
@@ -162,10 +200,19 @@ function registerGraphCommand(
         }
         try {
           const document = await vscode.workspace.openTextDocument(uri);
-          await vscode.window.showTextDocument(document, {
+          const editor = await vscode.window.showTextDocument(document, {
             preview: false,
             preserveFocus: false
           });
+          const startLine = functionStartLines.get(message.nodeId);
+          if (startLine !== undefined) {
+            const position = new vscode.Position(startLine, 0);
+            editor.selection = new vscode.Selection(position, position);
+            editor.revealRange(
+              new vscode.Range(position, position),
+              vscode.TextEditorRevealType.InCenterIfOutsideViewport
+            );
+          }
         } catch (error) {
           const detail = formatError(error);
           output.appendLine(`Could not open ${uri.toString()}: ${detail}`);
@@ -183,9 +230,16 @@ function registerGraphCommand(
     );
 
     try {
-      const result = await scanWorkspace(output);
+      const result = await scanWorkspace(
+        output,
+        context,
+        mode === '2d'
+      );
       pendingGraph = result.graph;
+      pendingFunctionNodes = result.functionNodes;
+      pendingFunctionEdges = result.functionEdges;
       fileUris = result.fileUris;
+      functionStartLines = result.functionStartLines;
       noteTargets = result.noteTargets;
       layoutRoot = result.layoutRoot;
       if (ready) {
@@ -193,7 +247,8 @@ function registerGraphCommand(
       }
       output.appendLine(
         `Rendered ${pendingGraph.nodes.length} file nodes and `
-        + `${pendingGraph.edges.length} import edges in the ${mode.toUpperCase()} view.`
+        + `${pendingGraph.edges.length} import edges in the ${mode.toUpperCase()} view; `
+        + `${pendingGraph.totalFunctions} function nodes are available lazily.`
       );
     } catch (error) {
       const detail = formatError(error);
@@ -224,10 +279,15 @@ function createPanel(
 }
 
 async function scanWorkspace(
-  output: vscode.OutputChannel
+  output: vscode.OutputChannel,
+  context: vscode.ExtensionContext,
+  includeFunctions: boolean
 ): Promise<{
   graph: WebviewGraph;
+  functionNodes: GraphNode[];
+  functionEdges: GraphEdge[];
   fileUris: Map<string, vscode.Uri>;
+  functionStartLines: Map<string, number>;
   noteTargets: Map<string, NoteTarget>;
   layoutRoot: string | undefined;
 }> {
@@ -238,7 +298,10 @@ async function scanWorkspace(
 
   const combinedNodes: GraphNode[] = [];
   const combinedEdges: GraphEdge[] = [];
+  const combinedFunctionNodes: GraphNode[] = [];
+  const combinedFunctionEdges: GraphEdge[] = [];
   const fileUris = new Map<string, vscode.Uri>();
+  const functionStartLines = new Map<string, number>();
   const noteTargets = new Map<string, NoteTarget>();
   let totalFiles = 0;
   let truncated = false;
@@ -264,6 +327,12 @@ async function scanWorkspace(
     }
     const result = await scanWorkspaceRoot(folder.uri.fsPath, {
       maxFiles: MAX_FILES + 1,
+      includeFunctions,
+      wasmDirectory: vscode.Uri.joinPath(
+        context.extensionUri,
+        'dist',
+        'tree-sitter'
+      ).fsPath,
       onError: (message) => {
         output.appendLine(message);
         if (message.startsWith('Could not load CodeFold notes:')) {
@@ -294,6 +363,23 @@ async function scanWorkspace(
         to: `${prefix}${edge.to}`
       });
     }
+    for (const node of result.functionNodes) {
+      const id = `${prefix}${node.id}`;
+      const displayPath = `${prefix}${node.path}`;
+      combinedFunctionNodes.push({ ...node, id, path: displayPath });
+      fileUris.set(
+        id,
+        vscode.Uri.joinPath(folder.uri, ...node.path.split('/'))
+      );
+      functionStartLines.set(id, node.range.startLine);
+    }
+    for (const edge of result.functionEdges) {
+      combinedFunctionEdges.push({
+        ...edge,
+        from: `${prefix}${edge.from}`,
+        to: `${prefix}${edge.to}`
+      });
+    }
   }
 
   combinedNodes.sort((left, right) => left.id.localeCompare(right.id));
@@ -301,6 +387,24 @@ async function scanWorkspace(
   const visibleIds = new Set(visibleNodes.map((node) => node.id));
   const visibleEdges = combinedEdges.filter(
     (edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to)
+  );
+  const visibleFunctionNodes = combinedFunctionNodes.filter(
+    (node) => visibleIds.has(node.path)
+  );
+  const visibleFunctionIds = new Set(
+    visibleFunctionNodes.map((node) => node.id)
+  );
+  const visibleFunctionEdges = combinedFunctionEdges.filter((edge) =>
+    (
+      edge.kind === 'contains'
+      && visibleIds.has(edge.from)
+      && visibleFunctionIds.has(edge.to)
+    )
+    || (
+      edge.kind === 'call'
+      && visibleFunctionIds.has(edge.from)
+      && visibleFunctionIds.has(edge.to)
+    )
   );
   truncated ||= combinedNodes.length > MAX_FILES || totalFiles > MAX_FILES;
 
@@ -314,10 +418,21 @@ async function scanWorkspace(
   }
 
   for (const nodeId of [...fileUris.keys()]) {
-    if (!visibleIds.has(nodeId)) {
+    if (!visibleIds.has(nodeId) && !visibleFunctionIds.has(nodeId)) {
       fileUris.delete(nodeId);
       noteTargets.delete(nodeId);
+      functionStartLines.delete(nodeId);
     }
+  }
+  const functionCounts: Record<string, number> = {};
+  for (const node of visibleFunctionNodes) {
+    functionCounts[node.path] = (functionCounts[node.path] ?? 0) + 1;
+  }
+  if (visibleFunctionNodes.length > 2_000) {
+    output.appendLine(
+      `Workspace contains ${visibleFunctionNodes.length} function nodes; `
+      + 'keeping the file layer as the default and supplying functions only on expansion.'
+    );
   }
   const seed = hashStrings([
     ...visibleNodes.map((node) => node.id),
@@ -330,9 +445,14 @@ async function scanWorkspace(
       seed,
       truncated,
       totalFiles,
+      totalFunctions: visibleFunctionNodes.length,
+      functionCounts,
       layout
     },
+    functionNodes: visibleFunctionNodes,
+    functionEdges: visibleFunctionEdges,
     fileUris,
+    functionStartLines,
     noteTargets,
     layoutRoot
   };
@@ -395,6 +515,16 @@ function get2dWebviewHtml(
       stroke-linecap: round; vector-effect: non-scaling-stroke;
     }
     .dependency.aggregate { stroke: var(--dependency-edge-strong); }
+    .dependency.call {
+      stroke: color-mix(in srgb, var(--dependency-edge-strong) 84%, transparent);
+      stroke-dasharray: 7 4;
+    }
+    .dependency.contains {
+      stroke: color-mix(in srgb, var(--dependency-edge) 72%, transparent);
+      stroke-dasharray: 2 4;
+    }
+    .dependency.phase1-edge { animation: edge-in 160ms ease-out both; }
+    @keyframes edge-in { from { opacity: 0; } to { opacity: 1; } }
     #dependency-arrow-shape { fill: var(--dependency-edge-strong); }
     .edge-count {
       fill: var(--vscode-foreground); stroke: var(--vscode-editor-background);
@@ -461,7 +591,8 @@ function get2dWebviewHtml(
     .file-card.dragging { cursor: grabbing; z-index: 5; }
     .file-card:focus-visible { outline: 2px solid var(--vscode-focusBorder); }
     .file-title {
-      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      display: grid; grid-template-columns: 20px minmax(0, 1fr) auto;
+      align-items: center; gap: 6px;
       height: 34px; padding: 0 9px;
       background: color-mix(in srgb, var(--panel-strong) 88%, transparent);
       border-bottom: 1px solid color-mix(in srgb, var(--neutral) 42%, transparent);
@@ -470,6 +601,20 @@ function get2dWebviewHtml(
       min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       font-weight: 650;
     }
+    .file-function-toggle {
+      display: grid; place-items: center; width: 20px; height: 22px; padding: 0;
+      color: var(--vscode-descriptionForeground); background: transparent;
+      border: 0; border-radius: 3px; cursor: pointer;
+      transform: rotate(0); transition: transform 160ms ease, opacity 120ms ease;
+    }
+    .file-function-toggle:hover {
+      color: var(--vscode-foreground);
+      background: color-mix(in srgb, var(--neutral) 18%, transparent);
+    }
+    .file-function-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+    .file-function-toggle.expanded { transform: rotate(90deg); }
+    .file-function-toggle.loading { opacity: .55; }
+    .file-function-toggle:disabled { cursor: default; opacity: .28; }
     .language-badge {
       flex: 0 0 auto; padding: 2px 5px; border-radius: 4px;
       color: var(--vscode-descriptionForeground);
@@ -480,6 +625,33 @@ function get2dWebviewHtml(
       height: 66px; padding: 8px 9px; overflow: hidden;
       color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.45;
       white-space: normal; overflow-wrap: anywhere;
+    }
+    .function-card {
+      position: absolute; z-index: 7; width: 190px; height: 46px; padding: 7px 9px;
+      overflow: hidden; cursor: pointer; user-select: none;
+      border: 1px solid color-mix(in srgb, var(--neutral) 72%, transparent);
+      border-radius: 6px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      box-shadow: 0 3px 12px color-mix(in srgb, #000 24%, transparent);
+      opacity: 0; transform: translateX(-8px) scale(.98);
+      transition: opacity 160ms ease, transform 160ms ease, border-color 120ms ease;
+      will-change: opacity, transform;
+    }
+    .function-card.visible { opacity: 1; transform: translateX(0) scale(1); }
+    .function-card.closing { opacity: 0; transform: translateX(-8px) scale(.98); }
+    .function-card:hover {
+      border-color: color-mix(in srgb, var(--neutral) 55%, var(--vscode-foreground));
+    }
+    .function-card.selected {
+      outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px;
+    }
+    .function-name {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 12px; font-weight: 680;
+    }
+    .function-range {
+      margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 10px;
     }
     #status, #warning, #layout-warning, #tooltip, #reset-view {
       position: fixed; z-index: 20; border-radius: 5px;
@@ -577,9 +749,9 @@ function get2dWebviewHtml(
   <div id="layout-warning" role="alert" hidden></div>
   <div id="tooltip" role="tooltip" hidden></div>
   <button id="reset-view" type="button" title="Fit all folders in the canvas">Reset view</button>
-  <aside id="sidebar" aria-label="Selected file details">
-    <h2>File details</h2>
-    <p id="sidebar-empty">Expand a folder, then select a file card. Double-click a card to open it.</p>
+  <aside id="sidebar" aria-label="Selected node details">
+    <h2>Node details</h2>
+    <p id="sidebar-empty">Expand a folder, then select a file card. Use its title arrow to show functions.</p>
     <div id="node-details" hidden>
       <div class="field"><span class="field-label">Name</span><p id="node-name" class="field-value"></p></div>
       <div class="field"><span class="field-label">Path</span><p id="node-path" class="field-value"></p></div>
@@ -738,6 +910,7 @@ function isWebviewMessage(
 ): message is
   | { type: 'ready' }
   | { type: 'openFile'; nodeId: string }
+  | { type: 'loadFunctions'; fileId: string }
   | { type: 'saveAnnotation'; nodeId: string; manual: string }
   | { type: 'saveLayout'; layout: WorkspaceLayout } {
   if (typeof message !== 'object' || message === null || !('type' in message)) {
@@ -764,6 +937,13 @@ function isWebviewMessage(
         'manual' in message
         && typeof (message as { manual: unknown }).manual === 'string'
       );
+  }
+  if (
+    type === 'loadFunctions'
+    && 'fileId' in message
+    && typeof (message as { fileId: unknown }).fileId === 'string'
+  ) {
+    return true;
   }
   return false;
 }

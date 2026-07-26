@@ -47,7 +47,15 @@ export interface WebviewGraph {
   seed: number;
   truncated: boolean;
   totalFiles: number;
+  totalFunctions: number;
+  functionCounts: Record<string, number>;
   layout: WorkspaceLayout;
+}
+
+export interface FunctionGraphPayload {
+  fileId: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
 }
 
 export interface LayoutPoint {
