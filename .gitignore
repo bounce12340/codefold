@@ -13,3 +13,6 @@ coverage/
 .codefold/
 .npm-cache/
 .tmp/
+
+# build output of the preview harness (generated from src/extension.ts)
+tools/preview/index.html

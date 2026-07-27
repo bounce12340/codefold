@@ -29,6 +29,9 @@
   },
   "scripts": {
     "build": "node esbuild.mjs",
+    "preview:build": "node tools/preview/build.mjs",
+    "preview": "node tools/preview/serve.mjs",
+    "preview:verify": "node tools/preview/verify.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

@@ -1,6 +1,7 @@
 import * as esbuild from 'esbuild';
 import { copyFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { buildPreviewHarness } from './tools/preview/build.mjs';
 
 const watch = process.argv.includes('--watch');
 const shared = {
@@ -57,13 +58,14 @@ async function copyTreeSitterWasm() {
 }
 
 if (watch) {
-  await copyTreeSitterWasm();
+  await Promise.all([copyTreeSitterWasm(), buildPreviewHarness()]);
   const contexts = await Promise.all(builds.map((options) => esbuild.context(options)));
   await Promise.all(contexts.map((context) => context.watch()));
   console.log('CodeFold bundles are being watched.');
 } else {
   await Promise.all([
     ...builds.map((options) => esbuild.build(options)),
-    copyTreeSitterWasm()
+    copyTreeSitterWasm(),
+    buildPreviewHarness()
   ]);
 }
