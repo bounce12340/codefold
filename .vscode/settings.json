@@ -1,0 +1,5 @@
+{
+  // Development convenience: F5 opens the 2D canvas without running a command.
+  // The shipped default for codefold.openOnStartup is false.
+  "codefold.openOnStartup": true
+}

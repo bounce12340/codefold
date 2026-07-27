@@ -12,7 +12,8 @@
   ],
   "activationEvents": [
     "onCommand:codefold.open",
-    "onCommand:codefold.open3d"
+    "onCommand:codefold.open3d",
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -25,7 +26,17 @@
         "command": "codefold.open3d",
         "title": "CodeFold: Open 3D View"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "CodeFold",
+      "properties": {
+        "codefold.openOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open the CodeFold 2D canvas automatically when a workspace is loaded."
+        }
+      }
+    }
   },
   "scripts": {
     "build": "node esbuild.mjs",

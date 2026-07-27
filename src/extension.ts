@@ -77,6 +77,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     registerGraphCommand(context, output, 'codefold.open3d', '3d')
   );
+
+  if (vscode.workspace.getConfiguration('codefold').get<boolean>('openOnStartup', false)) {
+    void vscode.commands.executeCommand('codefold.open').then(undefined, (error: unknown) => {
+      output.appendLine(`Could not open the CodeFold canvas on startup: ${formatError(error)}`);
+    });
+  }
 }
 
 export function deactivate(): void {
