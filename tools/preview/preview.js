@@ -213,6 +213,7 @@
     scenarioIds: [...scenarioOrder],
     outboundMessages,
     applyScenario,
+    measureVisuals,
     get currentScenario() {
       return document.documentElement.dataset.previewScenario || '';
     }
@@ -320,6 +321,7 @@
       description.textContent = scenario.acceptance;
     }
     scenario.run();
+    scheduleVisualMeasurement();
   }
 
   function applyTheme(id) {
@@ -328,10 +330,81 @@
       document.documentElement.style.setProperty(name, value);
     }
     document.documentElement.dataset.previewTheme = resolvedId;
+    document.body.classList.toggle('vscode-dark', resolvedId === 'dark');
+    document.body.classList.toggle('vscode-light', resolvedId === 'light');
     const select = document.getElementById('preview-theme');
     if (select) {
       select.value = resolvedId;
     }
+    scheduleVisualMeasurement();
+  }
+
+  let visualMeasurementTimer;
+
+  function scheduleVisualMeasurement() {
+    clearTimeout(visualMeasurementTimer);
+    visualMeasurementTimer = setTimeout(() => {
+      const metrics = measureVisuals();
+      document.documentElement.dataset.previewMetrics =
+        btoa(unescape(encodeURIComponent(JSON.stringify(metrics))));
+    }, 320);
+  }
+
+  function measureVisuals() {
+    const stateCards = {};
+    for (const state of ['editing', 'dirty', 'error', 'passing', 'idle']) {
+      const card = document.querySelector(`.node-state-${state}`);
+      if (!card) {
+        continue;
+      }
+      const style = getComputedStyle(card);
+      const lamp = card.querySelector('.node-state-lamp');
+      const lampStyle = lamp ? getComputedStyle(lamp) : null;
+      stateCards[state] = {
+        borderColor: style.borderColor,
+        borderWidth: style.borderWidth,
+        boxShadow: style.boxShadow,
+        backgroundColor: style.backgroundColor,
+        lampColor: lampStyle?.backgroundColor || '',
+        lampWidth: lampStyle?.width || '',
+        lampHeight: lampStyle?.height || '',
+        lampRadius: lampStyle?.borderRadius || ''
+      };
+    }
+
+    const parent = document.querySelector(
+      '.file-card[data-node-id="src/ui/panel.ts"]'
+    );
+    const functions = Array.from(document.querySelectorAll(
+      '.function-card[data-node-id^="src/ui/panel.ts#"]'
+    ));
+    const contains = Array.from(document.querySelectorAll('.dependency.contains'));
+    const expandedGroup = document.querySelector('.folder-group.expanded');
+    const parentRect = parent?.getBoundingClientRect();
+    return {
+      scenario: document.documentElement.dataset.previewScenario || '',
+      theme: document.documentElement.dataset.previewTheme || '',
+      stateCards,
+      functions: {
+        ownerLabels: functions.map((card) =>
+          card.querySelector('.function-owner')?.textContent || ''
+        ),
+        containsEdges: contains.length,
+        containsStroke: contains[0] ? getComputedStyle(contains[0]).stroke : '',
+        containsStrokeWidth: contains[0]
+          ? getComputedStyle(contains[0]).strokeWidth
+          : '',
+        functionTransitionDuration: functions[0]
+          ? getComputedStyle(functions[0]).transitionDuration
+          : '',
+        groupTransitionDuration: expandedGroup
+          ? getComputedStyle(expandedGroup).transitionDuration
+          : '',
+        parentToFirstGap: parentRect && functions[0]
+          ? Math.round(functions[0].getBoundingClientRect().left - parentRect.right)
+          : null
+      }
+    };
   }
 
   function updateUrl() {

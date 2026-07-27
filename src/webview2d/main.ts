@@ -92,8 +92,7 @@ const FILE_GAP_Y = 16;
 const FUNCTION_WIDTH = 190;
 const FUNCTION_HEIGHT = 46;
 const FUNCTION_GAP = 10;
-const FUNCTION_PANEL_GAP = 24;
-const FUNCTION_PANEL_COLUMNS = 3;
+const FUNCTION_PANEL_GAP = 16;
 const GROUP_PADDING = 14;
 const GROUP_HEADER_HEIGHT = 48;
 const MIN_SCALE = 0.12;
@@ -535,25 +534,38 @@ function functionPanelPosition(
   fileIndex: number
 ): LayoutPoint {
   const base = baseGroupDimensions(group);
-  const panelColumn = fileIndex % FUNCTION_PANEL_COLUMNS;
-  const panelRow = Math.floor(fileIndex / FUNCTION_PANEL_COLUMNS);
-  let y = GROUP_HEADER_HEIGHT + GROUP_PADDING;
-  for (let row = 0; row < panelRow; row += 1) {
-    let rowFunctionCount = 0;
-    for (let column = 0; column < FUNCTION_PANEL_COLUMNS; column += 1) {
-      const file = group.group.files[row * FUNCTION_PANEL_COLUMNS + column];
-      rowFunctionCount = Math.max(
-        rowFunctionCount,
-        file === undefined ? 0 : (graph?.functionCounts[file.id] ?? 0)
-      );
+  const columns = fileGridColumns(group.group.files.length);
+  let panelBottom = GROUP_HEADER_HEIGHT + GROUP_PADDING;
+  for (let index = 0; index <= fileIndex; index += 1) {
+    const file = group.group.files[index];
+    if (file === undefined || !expandedFunctionFiles.has(file.id)) {
+      continue;
     }
-    y += Math.max(1, rowFunctionCount) * (FUNCTION_HEIGHT + FUNCTION_GAP)
-      + FUNCTION_GAP;
+    const parentPosition = group.filePositions.get(file.id);
+    const naturalY = parentPosition === undefined
+      ? panelBottom
+      : parentPosition.y + (FILE_HEIGHT - FUNCTION_HEIGHT) / 2;
+    const y = Math.max(naturalY, panelBottom);
+    if (index === fileIndex) {
+      const nextFileSharesRow =
+        index % columns < columns - 1
+        && group.group.files[index + 1] !== undefined;
+      return {
+        x: nextFileSharesRow || parentPosition === undefined
+          ? base.width + FUNCTION_PANEL_GAP
+          : parentPosition.x + FILE_WIDTH + FUNCTION_PANEL_GAP,
+        y
+      };
+    }
+    const functionCount = graph?.functionCounts[file.id] ?? 0;
+    panelBottom = y
+      + Math.max(1, functionCount) * FUNCTION_HEIGHT
+      + Math.max(0, functionCount - 1) * FUNCTION_GAP
+      + FUNCTION_PANEL_GAP;
   }
   return {
-    x: base.width + FUNCTION_PANEL_GAP
-      + panelColumn * (FUNCTION_WIDTH + FUNCTION_GAP),
-    y
+    x: base.width + FUNCTION_PANEL_GAP,
+    y: panelBottom
   };
 }
 
@@ -797,7 +809,7 @@ function renderFileFunctions(group: GroupView, fileId: string): void {
       x: panel.x,
       y: panel.y + index * (FUNCTION_HEIGHT + FUNCTION_GAP)
     };
-    const element = createFunctionCard(node, position);
+    const element = createFunctionCard(node, position, index);
     group.filesElement.append(element);
     functionViews.set(node.id, {
       node,
@@ -811,10 +823,12 @@ function renderFileFunctions(group: GroupView, fileId: string): void {
 
 function createFunctionCard(
   node: GraphNode,
-  position: LayoutPoint
+  position: LayoutPoint,
+  childIndex: number
 ): HTMLDivElement {
   const card = document.createElement('div');
   card.className = 'function-card';
+  card.classList.toggle('function-child-continuation', childIndex > 0);
   card.dataset.nodeId = node.id;
   card.tabIndex = 0;
   card.setAttribute('role', 'button');
@@ -825,9 +839,12 @@ function createFunctionCard(
   card.style.left = `${position.x}px`;
   card.style.top = `${position.y}px`;
   card.innerHTML =
-    `<div class="function-name"></div><div class="function-range"></div>`
+    `<div class="function-title"><span class="function-owner"></span>`
+    + `<span class="function-name"></span></div><div class="function-range"></div>`
     + `<span class="node-state-lamp" aria-hidden="true"></span>`
     + `<div class="agent-badges" aria-label="Editing agents"></div>`;
+  requireDescendant<HTMLElement>(card, '.function-owner').textContent =
+    `${fileById.get(node.path)?.name ?? node.path} ›`;
   requireDescendant<HTMLElement>(card, '.function-name').textContent = node.name;
   requireDescendant<HTMLElement>(card, '.function-range').textContent =
     `lines ${node.range.startLine + 1}–${node.range.endLine + 1}`;

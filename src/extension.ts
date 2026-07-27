@@ -885,6 +885,17 @@ function get2dWebviewHtml(
       --dependency-edge-strong:
         color-mix(in srgb, var(--neutral) 90%, var(--vscode-foreground));
     }
+    body.vscode-light, body.vscode-high-contrast-light {
+      --state-editing:
+        color-mix(in srgb, var(--vscode-editorWarning-foreground, #bf8803) 72%, #594000);
+      --state-dirty:
+        color-mix(in srgb, var(--vscode-editorWarning-foreground, #bf8803) 40%, #453a12);
+      --state-error:
+        color-mix(in srgb, var(--vscode-errorForeground, #a1260d) 82%, #5f1309);
+      --state-passing:
+        color-mix(in srgb, var(--vscode-testing-iconPassed, #388a34) 72%, #164c25);
+      --state-neutral: color-mix(in srgb, var(--neutral) 68%, #344f66);
+    }
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
     body {
@@ -922,8 +933,9 @@ function get2dWebviewHtml(
       stroke-dasharray: 7 4;
     }
     .dependency.contains {
-      stroke: color-mix(in srgb, var(--dependency-edge) 72%, transparent);
-      stroke-dasharray: 2 4;
+      stroke: color-mix(in srgb, var(--dependency-edge-strong) 82%, transparent);
+      stroke-width: 2.2px;
+      stroke-dasharray: none;
     }
     .dependency.phase1-edge { animation: edge-in 160ms ease-out both; }
     @keyframes edge-in { from { opacity: 0; } to { opacity: 1; } }
@@ -994,18 +1006,22 @@ function get2dWebviewHtml(
     .file-card:focus-visible { outline: 2px solid var(--vscode-focusBorder); }
     .file-card.node-state-editing, .function-card.node-state-editing {
       border-color: var(--state-editing);
+      border-width: 2px;
       animation: editing-flash 820ms ease-in-out infinite alternate;
     }
     .file-card.node-state-dirty, .function-card.node-state-dirty {
       border-color: var(--state-dirty);
-      box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-dirty) 45%, transparent),
+      border-width: 1px 1px 1px 4px;
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-dirty) 58%, transparent),
         0 4px 13px color-mix(in srgb, #000 26%, transparent);
     }
     .file-card.node-state-error, .function-card.node-state-error {
       border-color: var(--state-error);
+      border-width: 2px;
     }
     .file-card.node-state-passing, .function-card.node-state-passing {
       border-color: var(--state-passing);
+      border-width: 2px;
     }
     .file-card.node-state-verifying, .function-card.node-state-verifying {
       border-color: var(--state-neutral);
@@ -1066,7 +1082,10 @@ function get2dWebviewHtml(
       background: var(--state-neutral);
     }
     .node-state-editing .node-state-lamp { background: var(--state-editing); }
-    .node-state-dirty .node-state-lamp { background: var(--state-dirty); }
+    .node-state-dirty .node-state-lamp {
+      width: 12px; height: 5px; border-radius: 1px;
+      background: var(--state-dirty);
+    }
     .node-state-error .node-state-lamp { background: var(--state-error); }
     .node-state-passing .node-state-lamp { background: var(--state-passing); }
     .agent-badges {
@@ -1089,7 +1108,7 @@ function get2dWebviewHtml(
     .agent-badge.shape-square { border-radius: 2px; }
     .function-card {
       position: absolute; z-index: 7; width: 190px; height: 46px; padding: 7px 9px;
-      overflow: hidden; cursor: pointer; user-select: none;
+      overflow: visible; cursor: pointer; user-select: none;
       border: 1px solid color-mix(in srgb, var(--neutral) 72%, transparent);
       border-radius: 6px;
       color: var(--vscode-foreground);
@@ -1098,6 +1117,15 @@ function get2dWebviewHtml(
       opacity: 0; transform: translateX(-8px) scale(.98);
       transition: opacity 160ms ease, transform 160ms ease, border-color 120ms ease;
       will-change: opacity, transform;
+    }
+    .function-card::before {
+      content: ""; position: absolute; right: 100%; top: 50%; width: 16px;
+      border-top: 2px solid color-mix(in srgb, var(--dependency-edge-strong) 82%, transparent);
+    }
+    .function-card.function-child-continuation::after {
+      content: ""; position: absolute; right: calc(100% + 14px);
+      top: calc(-50% - 10px); height: calc(100% + 10px);
+      border-left: 2px solid color-mix(in srgb, var(--dependency-edge-strong) 82%, transparent);
     }
     .function-card.visible { opacity: 1; transform: translateX(0) scale(1); }
     .function-card.closing { opacity: 0; transform: translateX(-8px) scale(.98); }
@@ -1114,7 +1142,15 @@ function get2dWebviewHtml(
     .function-card.selected {
       outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px;
     }
+    .function-title {
+      display: flex; align-items: baseline; gap: 4px; min-width: 0;
+    }
+    .function-owner {
+      flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      color: var(--vscode-descriptionForeground); font-size: 9px; white-space: nowrap;
+    }
     .function-name {
+      flex: 1 1 auto; min-width: 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       font-size: 12px; font-weight: 680;
     }
