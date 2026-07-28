@@ -23,7 +23,11 @@ try {
     ['conflict', 'dark'],
     ['hierarchy', 'dark'],
     ['error', 'dark'],
+    ['state-passing', 'dark'],
+    ['verifying', 'dark'],
     ['passing', 'dark'],
+    ['test-failure', 'dark'],
+    ['test-mixed', 'dark'],
     ['status-colors', 'dark'],
     ['status-colors', 'light'],
     ['functions', 'dark'],
@@ -89,6 +93,9 @@ try {
       || scenarioId === 'status-colors'
       || scenarioId === 'functions'
       || scenarioId.startsWith('diagnostics')
+      || scenarioId === 'verifying'
+      || scenarioId === 'passing'
+      || scenarioId.startsWith('test-')
     ) {
       console.log(`${resultId}-metrics: ${JSON.stringify(summary.metrics)}`);
     }
@@ -224,14 +231,25 @@ function summarizeDom(html) {
     rootAgents: hierarchy.roots,
     diagnosticEntries: elementsWithClass(html, 'diagnostic-entry').length,
     diagnosticText: textById(html, 'node-diagnostics'),
+    testFailureEntries: elementsWithClass(html, 'test-failure-entry').length,
+    testFailureText: textById(html, 'node-test-failures'),
     selectedState: textById(html, 'node-state'),
     selectedErrorSources: textById(html, 'node-errors'),
     editing: countState('editing'),
     dirty: countState('dirty'),
     error: countState('error'),
     passing: countState('passing'),
+    verifying: countState('verifying'),
     idle: countState('idle'),
-    functionError: countFunctionState('error')
+    functionError: countFunctionState('error'),
+    functionVerifying: countFunctionState('verifying'),
+    passingGroups: groups.filter(({ classes }) =>
+      classes.includes('test-run-passing')
+    ).length,
+    flowNodes: [...fileCards, ...functionCards].filter(({ classes }) =>
+      classes.includes('test-flow-active')
+    ).length,
+    flowEdges: elementsWithClass(html, 'test-flow-edge').length
   };
 }
 
@@ -340,8 +358,55 @@ function assertScenario(summary) {
     case 'error':
       assert(summary.error === 1, 'error card missing');
       break;
-    case 'passing':
+    case 'state-passing':
       assert(summary.passing === 1, 'passing card missing');
+      break;
+    case 'verifying':
+      assert(summary.expandedGroups >= 2, 'verifying path did not expand its groups');
+      assert(
+        summary.verifying >= 1 && summary.functionVerifying >= 3,
+        'verifying file/function states are incomplete'
+      );
+      assert(summary.flowNodes >= 4, 'ordered flow node classes are missing');
+      assert(summary.flowEdges >= 2, 'flow did not illuminate visible edges');
+      assert(
+        summary.metrics.stateCards.verifying.borderColor
+        === summary.metrics.stateCards.verifying.lampColor,
+        'verifying glow does not reuse the neutral state color'
+      );
+      break;
+    case 'passing':
+      assert(summary.expandedGroups === 0, 'passing groups did not fold');
+      assert(summary.fileCards === 0, 'passing file cards remain expanded');
+      assert(summary.passingGroups === 2, 'covered groups are not marked passing');
+      assert(summary.metrics.testRun.passingGroups === 2, 'passing metric is incomplete');
+      break;
+    case 'test-failure':
+      assert(summary.expandedGroups === 1, 'failed path did not stay expanded');
+      assert(
+        summary.error === 1 && summary.functionError === 1,
+        'failed file/function nodes are not red'
+      );
+      assert(summary.testFailureEntries === 1, 'test failure sidebar entry missing');
+      assert(
+        summary.testFailureText.includes('test: panel renders state')
+        && summary.testFailureText.includes('AssertionError')
+        && summary.testFailureText.includes('renderPanel'),
+        'test name or stack trace is missing'
+      );
+      break;
+    case 'test-mixed':
+      assert(
+        summary.passing === 1 && summary.error === 1,
+        'mixed green/red states are not both visible'
+      );
+      assert(summary.expandedGroups === 2, 'mixed result groups are not both visible');
+      assert(summary.testFailureEntries === 1, 'runtime failure detail is missing');
+      assert(
+        summary.testFailureText.includes('runtime: test_extracts_functions')
+        && summary.testFailureText.includes('RuntimeError'),
+        'runtime source or stack trace is missing'
+      );
       break;
     case 'status-colors':
       assert(

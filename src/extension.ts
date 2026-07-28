@@ -23,6 +23,14 @@ import { writeWorkspaceNote } from './scanner/notes';
 import { scanWorkspaceRoot } from './scanner/scanWorkspace';
 import { NodeStateStore } from './state/nodeStateMachine';
 import { findChangedLineRange } from './state/textChanges';
+import { parseCoverageJson, type CoverageRecord } from './testing/coverage';
+import { parseTestFailures, type ParsedFailure } from './testing/failures';
+import {
+  createTestCommandPlans,
+  resolveTestSettings
+} from './testing/testConfig';
+import { executeTestCommand } from './testing/testProcess';
+import { TestRunTracker } from './testing/testRunTracker';
 
 const MAX_FILES = 2_000;
 const VIEW_TYPES = {
@@ -79,7 +87,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         phase2Runtime = runtime;
       }
     ),
-    registerGraphCommand(context, output, 'codefold.open3d', '3d')
+    registerGraphCommand(context, output, 'codefold.open3d', '3d'),
+    vscode.commands.registerCommand('codefold.runTests', async () => {
+      if (!phase2Runtime) {
+        void vscode.window.showWarningMessage(
+          'Open the CodeFold 2D canvas before running tracked tests.'
+        );
+        return;
+      }
+      await phase2Runtime.runTests('command');
+    })
   );
 
   if (vscode.workspace.getConfiguration('codefold').get<boolean>('openOnStartup', false)) {
@@ -263,8 +280,23 @@ function registerGraphCommand(
           }
           return;
         }
+        if (message.type === 'runTests') {
+          if (mode !== '2d' || !localPhase2Runtime) {
+            const detail = 'Open and finish loading the CodeFold 2D canvas first.';
+            output.appendLine(`Could not run tracked tests: ${detail}`);
+            await panel.webview.postMessage({
+              type: 'testRunError',
+              message: detail
+            });
+            return;
+          }
+          await localPhase2Runtime.runTests('webview');
+          return;
+        }
         const targetNodeId =
-          message.type === 'openDiagnostic' ? message.fileId : message.nodeId;
+          message.type === 'openDiagnostic' || message.type === 'openTestFailure'
+            ? message.fileId
+            : message.nodeId;
         const uri = fileUris.get(targetNodeId);
         if (uri === undefined) {
           output.appendLine(`Webview requested unknown node: ${targetNodeId}`);
@@ -276,13 +308,16 @@ function registerGraphCommand(
             preview: false,
             preserveFocus: false
           });
-          const startLine = message.type === 'openDiagnostic'
+          const startLine =
+            message.type === 'openDiagnostic' || message.type === 'openTestFailure'
             ? message.line
             : functionStartLines.get(message.nodeId);
           if (startLine !== undefined) {
             const position = new vscode.Position(
               startLine,
-              message.type === 'openDiagnostic' ? message.character : 0
+              message.type === 'openDiagnostic' || message.type === 'openTestFailure'
+                ? message.character
+                : 0
             );
             editor.selection = new vscode.Selection(position, position);
             editor.revealRange(
@@ -327,7 +362,8 @@ function registerGraphCommand(
           fileUris,
           fileContents: result.fileContents,
           agentRegistry,
-          output
+          output,
+          workspaceRoot: result.layoutRoot
         });
         setPhase2Runtime?.(localPhase2Runtime);
       }
@@ -561,6 +597,7 @@ async function scanWorkspace(
 interface Phase2Runtime extends vscode.Disposable {
   handleAgentEvent(event: AgentHookEvent): Promise<void>;
   postSnapshot(): Promise<void>;
+  runTests(trigger: 'command' | 'webview' | 'save'): Promise<void>;
 }
 
 interface Phase2RuntimeOptions {
@@ -571,6 +608,7 @@ interface Phase2RuntimeOptions {
   fileContents: Map<string, string>;
   agentRegistry: AgentRegistry;
   output: vscode.OutputChannel;
+  workspaceRoot: string | undefined;
 }
 
 function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
@@ -581,7 +619,8 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
     fileUris,
     fileContents,
     agentRegistry,
-    output
+    output,
+    workspaceRoot
   } = options;
   const allNodes = [...graph.nodes, ...functionNodes];
   const nodeById = new Map(allNodes.map((node) => [node.id, node]));
@@ -600,6 +639,8 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
   }
 
   let disposed = false;
+  let testRunActive = false;
+  let autoTestTimer: ReturnType<typeof setTimeout> | undefined;
   const postState = async (nodes: GraphNode[]): Promise<void> => {
     if (disposed) {
       return;
@@ -607,7 +648,8 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
     const update: NodeStateUpdate = {
       nodes,
       agents: agentRegistry.snapshots(),
-      diagnostics: diagnosticTracker?.snapshot() ?? {}
+      diagnostics: diagnosticTracker?.snapshot() ?? {},
+      testRun: testRunTracker?.snapshot()
     };
     try {
       await panel.webview.postMessage({ type: 'stateUpdate', update });
@@ -619,6 +661,25 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
     void postState(nodes);
   });
   const diagnosticTracker = new DiagnosticTracker(allNodes, stateStore);
+  const testRunTracker = workspaceRoot
+    ? new TestRunTracker(allNodes, stateStore, workspaceRoot)
+    : undefined;
+
+  const scheduleAutomaticTests = (): void => {
+    const enabled = vscode.workspace
+      .getConfiguration('codefold')
+      .get<boolean>('runTestsOnSave', false);
+    if (!enabled || disposed) {
+      return;
+    }
+    if (autoTestTimer) {
+      clearTimeout(autoTestTimer);
+    }
+    autoTestTimer = setTimeout(() => {
+      autoTestTimer = undefined;
+      void runTests('save');
+    }, 350);
+  };
 
   const collectDiagnostics = (): DiagnosticInput[] => {
     const inputs: DiagnosticInput[] = [];
@@ -758,6 +819,11 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
       }
     }
   });
+  const documentSave = vscode.workspace.onDidSaveTextDocument((document) => {
+    if (fileIdByFsPath.has(normalizeFsPath(document.uri.fsPath))) {
+      scheduleAutomaticTests();
+    }
+  });
 
   const resolveTargets = (
     event: AgentHookEvent
@@ -829,6 +895,114 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
   }
   refreshDiagnostics();
 
+  const runTests = async (
+    trigger: 'command' | 'webview' | 'save'
+  ): Promise<void> => {
+    if (disposed || !testRunTracker || !workspaceRoot) {
+      const detail = 'No local workspace is available for tracked tests.';
+      output.appendLine(`Could not run tracked tests: ${detail}`);
+      await panel.webview.postMessage({ type: 'testRunError', message: detail });
+      return;
+    }
+    if (testRunActive) {
+      output.appendLine(
+        `Ignored ${trigger} test trigger because a tracked test run is already active.`
+      );
+      return;
+    }
+    testRunActive = true;
+    const candidates = allNodes
+      .filter((node) =>
+        node.state === 'dirty'
+        || node.state === 'editing'
+        || node.state === 'error'
+      )
+      .map((node) => node.id);
+    testRunTracker.begin(candidates);
+    await postState([]);
+    output.appendLine(`Starting tracked tests from ${trigger} trigger.`);
+
+    try {
+      const configuration = vscode.workspace.getConfiguration('codefold');
+      const settings = resolveTestSettings({
+        runTestsOnSave: configuration.get<boolean>('runTestsOnSave'),
+        javascriptCommand: configuration.get<string>('testCommand.javascript'),
+        pythonCommand: configuration.get<string>('testCommand.python'),
+        javascriptCoverageFile: configuration.get<string>(
+          'testCoverage.javascript'
+        ),
+        pythonCoverageFile: configuration.get<string>('testCoverage.python')
+      });
+      const packageJson = await readOptionalJson(
+        vscode.Uri.joinPath(vscode.Uri.file(workspaceRoot), 'package.json')
+      );
+      const plans = createTestCommandPlans(
+        settings,
+        new Set(graph.nodes.map((node) => node.lang)),
+        packageJson
+      );
+      if (plans.length === 0) {
+        throw new Error('No supported JS/TS or Python files are available to test.');
+      }
+
+      const coverageRecords: CoverageRecord[] = [];
+      const failures: ParsedFailure[] = [];
+      let combinedExitCode = 0;
+      for (const plan of plans) {
+        const startedAt = Date.now();
+        output.appendLine(`[tests:${plan.language}] ${plan.command}`);
+        const commandResult = await executeTestCommand(plan.command, workspaceRoot);
+        let combinedOutput = commandResult.output;
+        combinedExitCode = Math.max(combinedExitCode, commandResult.exitCode);
+        if (plan.afterCommand) {
+          output.appendLine(`[tests:${plan.language}:coverage] ${plan.afterCommand}`);
+          const afterResult = await executeTestCommand(
+            plan.afterCommand,
+            workspaceRoot
+          );
+          combinedOutput += `\n${afterResult.output}`;
+          if (commandResult.exitCode === 0) {
+            combinedExitCode = Math.max(combinedExitCode, afterResult.exitCode);
+          }
+        }
+        const reportUri = vscode.Uri.joinPath(
+          vscode.Uri.file(workspaceRoot),
+          ...plan.coverageFile.replaceAll('\\', '/').split('/')
+        );
+        const report = await readFreshCoverage(reportUri, startedAt);
+        coverageRecords.push(...parseCoverageJson(report));
+        failures.push(...parseTestFailures(combinedOutput));
+        output.appendLine(
+          `[tests:${plan.language}] exit=${commandResult.exitCode}; `
+          + `captured ${combinedOutput.length} output character(s).`
+        );
+      }
+
+      const result = testRunTracker.prepare(
+        coverageRecords,
+        failures,
+        combinedExitCode
+      );
+      await postState([]);
+      await delay(testFlowDuration(result.coverage.sequence.length));
+      testRunTracker.complete(result);
+      await postState([]);
+      output.appendLine(result.message);
+      if (!result.passed) {
+        output.show(true);
+      }
+    } catch (error) {
+      const detail = formatError(error);
+      testRunTracker.fail(detail);
+      await postState([]);
+      output.appendLine(`Tracked test run failed: ${detail}`);
+      output.show(true);
+      void vscode.window.showErrorMessage(`CodeFold test run failed: ${detail}`);
+    } finally {
+      testRunActive = false;
+    }
+  };
+
   return {
     async handleAgentEvent(event: AgentHookEvent): Promise<void> {
       const { nodeIds, workArea } = resolveTargets(event);
@@ -865,11 +1039,16 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
     async postSnapshot(): Promise<void> {
       await postState(allNodes.map(cloneGraphNode));
     },
+    runTests,
     dispose(): void {
       disposed = true;
+      if (autoTestTimer) {
+        clearTimeout(autoTestTimer);
+      }
       stateStore.dispose();
       watcherChange.dispose();
       documentChange.dispose();
+      documentSave.dispose();
       diagnosticChange.dispose();
       watcher.dispose();
     }
@@ -912,6 +1091,58 @@ function resolveFileId(
 function normalizeFsPath(value: string): string {
   const normalized = value.replaceAll('\\', '/').replace(/\/+$/, '');
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+async function readOptionalJson(uri: vscode.Uri): Promise<unknown> {
+  try {
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    return JSON.parse(Buffer.from(bytes).toString('utf8'));
+  } catch (error) {
+    if (
+      typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && error.code === 'FileNotFound'
+    ) {
+      return undefined;
+    }
+    if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') {
+      return undefined;
+    }
+    throw new Error(`Could not read ${uri.fsPath}: ${formatError(error)}`);
+  }
+}
+
+async function readFreshCoverage(
+  uri: vscode.Uri,
+  startedAt: number
+): Promise<string> {
+  let stat: vscode.FileStat;
+  let bytes: Uint8Array;
+  try {
+    [stat, bytes] = await Promise.all([
+      vscode.workspace.fs.stat(uri),
+      vscode.workspace.fs.readFile(uri)
+    ]);
+  } catch (error) {
+    throw new Error(
+      `Coverage report ${uri.fsPath} was not produced: ${formatError(error)}`
+    );
+  }
+  if (stat.mtime < startedAt - 1_000) {
+    throw new Error(
+      `Coverage report ${uri.fsPath} is stale; configure the test command to rewrite it.`
+    );
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+function testFlowDuration(sequenceLength: number): number {
+  return Math.min(1_500, Math.max(450, sequenceLength * 90 + 280));
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function rangesOverlap(
@@ -1024,7 +1255,18 @@ function get2dWebviewHtml(
       stroke-dasharray: none;
     }
     .dependency.phase1-edge { animation: edge-in 160ms ease-out both; }
+    .dependency.test-flow-edge {
+      stroke: var(--state-neutral);
+      stroke-width: 2.6px;
+      stroke-dasharray: 10 8;
+      animation: test-flow-edge 700ms ease-out both;
+      animation-delay: calc(var(--test-flow-order, 0) * 90ms);
+    }
     @keyframes edge-in { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes test-flow-edge {
+      from { stroke-dashoffset: 36; opacity: .35; }
+      to { stroke-dashoffset: 0; opacity: 1; }
+    }
     #dependency-arrow-shape { fill: var(--dependency-edge-strong); }
     .edge-count {
       fill: var(--vscode-foreground); stroke: var(--vscode-editor-background);
@@ -1043,6 +1285,11 @@ function get2dWebviewHtml(
     .folder-group.expanded {
       background: color-mix(in srgb, var(--vscode-editor-background) 93%, var(--neutral));
       box-shadow: 0 9px 30px color-mix(in srgb, #000 30%, transparent);
+    }
+    .folder-group.test-run-passing {
+      border: 2px solid var(--state-passing);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-passing) 30%, transparent),
+        0 6px 22px color-mix(in srgb, #000 24%, transparent);
     }
     .folder-group.dragging { box-shadow: 0 12px 35px color-mix(in srgb, #000 42%, transparent); }
     .folder-header {
@@ -1113,6 +1360,11 @@ function get2dWebviewHtml(
     .file-card.node-state-verifying, .function-card.node-state-verifying {
       border-color: var(--state-neutral);
     }
+    .file-card.node-state-verifying.test-flow-active,
+    .function-card.node-state-verifying.test-flow-active {
+      animation: test-flow-node 700ms ease-out both;
+      animation-delay: calc(var(--test-flow-order, 0) * 90ms);
+    }
     .file-card.node-conflict, .function-card.node-conflict {
       outline: 2px dotted var(--vscode-foreground); outline-offset: 2px;
     }
@@ -1134,6 +1386,18 @@ function get2dWebviewHtml(
       to {
         box-shadow: 0 0 0 4px color-mix(in srgb, var(--state-error) 42%, transparent),
           0 0 22px color-mix(in srgb, var(--state-error) 58%, transparent);
+      }
+    }
+    @keyframes test-flow-node {
+      from {
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-neutral) 28%, transparent);
+      }
+      55% {
+        box-shadow: 0 0 0 4px color-mix(in srgb, var(--state-neutral) 48%, transparent),
+          0 0 20px color-mix(in srgb, var(--state-neutral) 55%, transparent);
+      }
+      to {
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--state-neutral) 38%, transparent);
       }
     }
     .file-title {
@@ -1254,7 +1518,7 @@ function get2dWebviewHtml(
     .function-range {
       margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 10px;
     }
-    #status, #warning, #layout-warning, #tooltip, #reset-view {
+    #status, #warning, #layout-warning, #tooltip, #reset-view, #run-tests {
       position: fixed; z-index: 20; border-radius: 5px;
       border: 1px solid var(--vscode-widget-border, transparent);
     }
@@ -1278,12 +1542,16 @@ function get2dWebviewHtml(
       color: var(--vscode-editorHoverWidget-foreground);
       box-shadow: 0 5px 20px color-mix(in srgb, #000 35%, transparent);
     }
-    #reset-view {
+    #reset-view, #run-tests {
       right: calc(var(--sidebar-width) + 14px); bottom: 14px; padding: 7px 11px;
       color: var(--vscode-button-foreground); background: var(--vscode-button-background);
       cursor: pointer;
     }
-    #reset-view:hover { background: var(--vscode-button-hoverBackground); }
+    #run-tests { bottom: 52px; }
+    #reset-view:hover, #run-tests:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+    #run-tests:disabled { cursor: default; opacity: .58; }
     #sidebar {
       position: fixed; z-index: 30; top: 0; right: 0; bottom: 0;
       width: var(--sidebar-width); padding: 16px; overflow: auto;
@@ -1338,6 +1606,28 @@ function get2dWebviewHtml(
     .diagnostic-location {
       color: var(--vscode-descriptionForeground); font-size: 10px;
     }
+    #node-test-failures {
+      display: grid; gap: 7px; margin: 0; padding: 0; list-style: none;
+    }
+    .test-failure-entry {
+      display: grid; gap: 4px; width: 100%; padding: 7px 8px;
+      color: var(--vscode-foreground); text-align: left; cursor: pointer;
+      border: 1px solid var(--vscode-widget-border, var(--neutral));
+      border-left: 3px solid var(--state-error); border-radius: 4px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    }
+    .test-failure-entry:hover { border-color: var(--vscode-foreground); }
+    .test-failure-entry:focus-visible {
+      outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px;
+    }
+    .test-failure-name { font-size: 11px; font-weight: 750; }
+    .test-failure-message { font-size: 12px; line-height: 1.35; }
+    .test-failure-stack {
+      max-height: 120px; margin: 2px 0 0; overflow: auto;
+      color: var(--vscode-descriptionForeground);
+      font: 10px/1.35 var(--vscode-editor-font-family, monospace);
+      white-space: pre-wrap; overflow-wrap: anywhere;
+    }
     #agent-panel {
       margin-top: 18px; padding-top: 14px;
       border-top: 1px solid var(--vscode-sideBar-border, var(--vscode-widget-border));
@@ -1366,6 +1656,15 @@ function get2dWebviewHtml(
       }
       .file-card.node-state-error, .function-card.node-state-error {
         animation: error-breathe-reduced 3s ease-in-out infinite !important;
+      }
+      .file-card.node-state-verifying.test-flow-active,
+      .function-card.node-state-verifying.test-flow-active {
+        animation: none !important;
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--state-neutral) 44%, transparent);
+      }
+      .dependency.test-flow-edge {
+        animation: none !important;
+        stroke-dashoffset: 0;
       }
       @keyframes editing-breathe-reduced {
         from { box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-editing) 28%, transparent); }
@@ -1404,6 +1703,7 @@ function get2dWebviewHtml(
   <div id="warning" role="alert" hidden></div>
   <div id="layout-warning" role="alert" hidden></div>
   <div id="tooltip" role="tooltip" hidden></div>
+  <button id="run-tests" type="button" title="Run configured tests and track coverage">Run tests</button>
   <button id="reset-view" type="button" title="Fit all folders in the canvas">Reset view</button>
   <aside id="sidebar" aria-label="Selected node details">
     <h2>Node details</h2>
@@ -1418,6 +1718,10 @@ function get2dWebviewHtml(
       <div id="diagnostic-field" class="field" hidden>
         <span class="field-label">Diagnostics</span>
         <ul id="node-diagnostics"></ul>
+      </div>
+      <div id="test-failure-field" class="field" hidden>
+        <span class="field-label">Test failures</span>
+        <ul id="node-test-failures"></ul>
       </div>
       <div id="node-conflict" class="field" hidden>Potential conflict: multiple agents are editing this node.</div>
       <div class="field">
@@ -1586,6 +1890,13 @@ function isWebviewMessage(
     line: number;
     character: number;
   }
+  | {
+    type: 'openTestFailure';
+    fileId: string;
+    line: number;
+    character: number;
+  }
+  | { type: 'runTests' }
   | { type: 'loadFunctions'; fileId: string }
   | { type: 'saveAnnotation'; nodeId: string; manual: string }
   | { type: 'saveLayout'; layout: WorkspaceLayout } {
@@ -1593,7 +1904,7 @@ function isWebviewMessage(
     return false;
   }
   const type = (message as { type: unknown }).type;
-  if (type === 'ready') {
+  if (type === 'ready' || type === 'runTests') {
     return true;
   }
   if (
@@ -1615,7 +1926,7 @@ function isWebviewMessage(
       );
   }
   if (
-    type === 'openDiagnostic'
+    (type === 'openDiagnostic' || type === 'openTestFailure')
     && 'fileId' in message
     && typeof message.fileId === 'string'
     && 'line' in message

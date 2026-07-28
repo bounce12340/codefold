@@ -129,10 +129,21 @@ export class NodeStateStore {
   }
 
   setPassing(nodeIds: readonly string[]): void {
-    this.update(nodeIds, (signals) => {
+    const verifiedAt = new Date().toISOString();
+    this.update(nodeIds, (signals, nodeId) => {
       signals.dirty = false;
       signals.verifying = false;
       signals.passing = true;
+      const node = this.nodes.get(nodeId);
+      if (node) {
+        node.lastVerifiedAt = verifiedAt;
+      }
+    });
+  }
+
+  clearVerification(nodeIds: readonly string[]): void {
+    this.update(nodeIds, (signals) => {
+      signals.verifying = false;
     });
   }
 

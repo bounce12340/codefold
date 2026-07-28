@@ -25,6 +25,10 @@
       {
         "command": "codefold.open3d",
         "title": "CodeFold: Open 3D View"
+      },
+      {
+        "command": "codefold.runTests",
+        "title": "CodeFold: Run Tests"
       }
     ],
     "configuration": {
@@ -34,6 +38,31 @@
           "type": "boolean",
           "default": false,
           "description": "Open the CodeFold 2D canvas automatically when a workspace is loaded."
+        },
+        "codefold.runTestsOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run configured tests after a tracked source file is saved. Disabled by default because test commands may have side effects."
+        },
+        "codefold.testCommand.javascript": {
+          "type": "string",
+          "default": "",
+          "description": "JS/TS test command. Empty auto-detects Jest from package.json, otherwise tries local Vitest without installing packages."
+        },
+        "codefold.testCommand.python": {
+          "type": "string",
+          "default": "",
+          "description": "Python test command. Empty uses python -m coverage run -m pytest followed by coverage JSON generation."
+        },
+        "codefold.testCoverage.javascript": {
+          "type": "string",
+          "default": "coverage/coverage-final.json",
+          "description": "Workspace-relative Istanbul/c8 JSON coverage file produced by the JS/TS test command."
+        },
+        "codefold.testCoverage.python": {
+          "type": "string",
+          "default": "coverage.json",
+          "description": "Workspace-relative coverage.py JSON report produced by the Python test command."
         }
       }
     }

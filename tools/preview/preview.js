@@ -10,7 +10,11 @@
     'conflict',
     'hierarchy',
     'error',
+    'state-passing',
+    'verifying',
     'passing',
+    'test-failure',
+    'test-mixed',
     'status-colors',
     'functions',
     'diagnostics',
@@ -102,12 +106,132 @@
         ]);
       }
     },
-    passing: {
-      label: 'Passing',
+    'state-passing': {
+      label: 'Passing state card',
       acceptance: 'State color check — steady green passing',
       run: () => {
         sendGraph(['python']);
         sendState([fileUpdate('python/worker/parser.py', 'passing')]);
+      }
+    },
+    verifying: {
+      label: 'Coverage light flow in progress',
+      acceptance: 'Phase 4 acceptance 1 — ordered neutral glow along call edges',
+      run: () => {
+        const sequence = [
+          'src/ui/panel.ts',
+          'src/ui/panel.ts#renderPanel',
+          'src/ui/panel.ts#applyGraph',
+          'lib/graph/layout.ts#layoutGroups'
+        ];
+        sendGraph();
+        sendState(
+          [
+            fileUpdate('src/ui/panel.ts', 'verifying'),
+            functionUpdate('src/ui/panel.ts#renderPanel', 'verifying'),
+            functionUpdate('src/ui/panel.ts#applyGraph', 'verifying'),
+            functionUpdate('lib/graph/layout.ts#layoutGroups', 'verifying')
+          ],
+          [],
+          {},
+          testRun('flow', null, sequence, {}, 'Coverage path is flowing.')
+        );
+      }
+    },
+    passing: {
+      label: 'All tests passing and folded',
+      acceptance: 'Phase 4 acceptance 1 — green result returns to compact groups',
+      run: () => {
+        const sequence = [
+          'src/ui/panel.ts',
+          'src/ui/panel.ts#renderPanel',
+          'lib/graph/layout.ts',
+          'lib/graph/layout.ts#layoutGroups'
+        ];
+        sendGraph(['src', 'lib']);
+        sendState(
+          [
+            fileUpdate('src/ui/panel.ts', 'passing'),
+            functionUpdate('src/ui/panel.ts#renderPanel', 'passing'),
+            fileUpdate('lib/graph/layout.ts', 'passing'),
+            functionUpdate('lib/graph/layout.ts#layoutGroups', 'passing')
+          ],
+          [],
+          {},
+          testRun(
+            'complete',
+            'passed',
+            sequence,
+            {},
+            'Tests passed; covered groups are folded.'
+          )
+        );
+      }
+    },
+    'test-failure': {
+      label: 'Failing test path',
+      acceptance: 'Phase 4 acceptance 2 — red node, failure name, stack trace',
+      run: () => {
+        const detail = testFailure(
+          'src/ui/panel.ts',
+          'panel renders state',
+          'AssertionError: expected true to be false',
+          'test'
+        );
+        sendGraph();
+        sendState(
+          [
+            fileUpdate('src/ui/panel.ts', 'error', [], ['test']),
+            functionUpdate(
+              'src/ui/panel.ts#renderPanel',
+              'error',
+              [],
+              ['test']
+            )
+          ],
+          [],
+          {},
+          testRun(
+            'complete',
+            'failed',
+            ['src/ui/panel.ts', 'src/ui/panel.ts#renderPanel'],
+            {
+              'src/ui/panel.ts': [detail],
+              'src/ui/panel.ts#renderPanel': [detail]
+            },
+            'Tests failed with exit code 1.'
+          )
+        );
+        selectNodeLater('src/ui/panel.ts#renderPanel');
+      }
+    },
+    'test-mixed': {
+      label: 'Passing and failing paths together',
+      acceptance: 'Phase 4 color check — steady green and flashing red coexist',
+      run: () => {
+        const detail = testFailure(
+          'python/worker/parser.py',
+          'test_extracts_functions',
+          'RuntimeError: parser crashed',
+          'runtime'
+        );
+        sendGraph(['lib']);
+        sendState(
+          [
+            fileUpdate('lib/state/store.ts', 'passing'),
+            fileUpdate('python/worker/parser.py', 'error', [], ['runtime'])
+          ],
+          [],
+          {},
+          testRun(
+            'complete',
+            'failed',
+            ['lib/state/store.ts', 'python/worker/parser.py'],
+            { 'python/worker/parser.py': [detail] },
+            'Python tests failed with a runtime exception.'
+          )
+        );
+        selectNodeLater('python/worker/parser.py');
       }
     },
     'status-colors': {
@@ -445,7 +569,7 @@
 
   function measureVisuals() {
     const stateCards = {};
-    for (const state of ['editing', 'dirty', 'error', 'passing', 'idle']) {
+    for (const state of ['editing', 'dirty', 'error', 'passing', 'verifying', 'idle']) {
       const card = document.querySelector(`.node-state-${state}`);
       if (!card) {
         continue;
@@ -498,6 +622,12 @@
         parentToFirstGap: parentRect && functions[0]
           ? Math.round(functions[0].getBoundingClientRect().left - parentRect.right)
           : null
+      },
+      testRun: {
+        flowNodes: document.querySelectorAll('.test-flow-active').length,
+        flowEdges: document.querySelectorAll('.test-flow-edge').length,
+        passingGroups: document.querySelectorAll('.folder-group.test-run-passing').length,
+        failureEntries: document.querySelectorAll('.test-failure-entry').length
       }
     };
   }
@@ -516,10 +646,15 @@
     }, '*');
   }
 
-  function sendState(nodes, agents = [], diagnostics = {}) {
+  function sendState(nodes, agents = [], diagnostics = {}, testRunSnapshot) {
     window.postMessage({
       type: 'stateUpdate',
-      update: { nodes, agents, diagnostics }
+      update: {
+        nodes,
+        agents,
+        diagnostics,
+        ...(testRunSnapshot ? { testRun: testRunSnapshot } : {})
+      }
     }, '*');
   }
 
@@ -726,6 +861,27 @@
         endLine: line,
         endCharacter: character + 4
       }
+    };
+  }
+
+  function testRun(phase, outcome, sequence, failures, message) {
+    return { phase, outcome, sequence, failures, message };
+  }
+
+  function testFailure(fileId, testName, message, source) {
+    const line = fileId.endsWith('.py') ? 11 : 14;
+    const character = fileId.endsWith('.py') ? 0 : 2;
+    return {
+      id: `${source}:${fileId}:${testName}`,
+      testName,
+      message,
+      stack: fileId.endsWith('.py')
+        ? `File "${fileId}", line ${line + 1}, in parse_file\n${message}`
+        : `at renderPanel (${fileId}:${line + 1}:${character + 1})\n${message}`,
+      source,
+      fileId,
+      line,
+      character
     };
   }
 

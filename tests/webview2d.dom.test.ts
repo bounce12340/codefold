@@ -9,6 +9,8 @@ import type {
   NodeDiagnostics,
   NodeState,
   NodeStateUpdate,
+  TestFailureDetail,
+  TestRunSnapshot,
   WebviewGraph
 } from '../src/scanner/model';
 import { resolveNodeState } from '../src/state/nodeStateMachine';
@@ -259,6 +261,71 @@ describe('Phase 2 webview DOM rendering', () => {
     expect(card.classList.contains('node-state-error')).toBe(false);
     expect(requiredElement('node-diagnostics').textContent).toContain('tsc · warning');
   });
+
+  it('runs tests only from the explicit button gesture', () => {
+    requiredElement<HTMLButtonElement>('run-tests').click();
+
+    expect(postedMessages).toContainEqual({ type: 'runTests' });
+    expect(requiredElement<HTMLButtonElement>('run-tests').disabled).toBe(true);
+  });
+
+  it('animates verifying nodes then collapses passing groups without moving them', () => {
+    const positionsBefore = groupPositions();
+    const forceCallsBefore = d3Spies.forceSimulation.mock.calls.length;
+    sendState(
+      [nodeState('src/alpha.ts', 'verifying')],
+      [],
+      {},
+      testRun('flow', null, ['src/alpha.ts'])
+    );
+
+    expect(group('src').classList.contains('expanded')).toBe(true);
+    expect(requiredFileCard('src/alpha.ts').classList.contains('test-flow-active'))
+      .toBe(true);
+    expect(groupPositions()).toEqual(positionsBefore);
+
+    sendState(
+      [nodeState('src/alpha.ts', 'passing')],
+      [],
+      {},
+      testRun('complete', 'passed', ['src/alpha.ts'])
+    );
+
+    expect(group('src').classList.contains('expanded')).toBe(false);
+    expect(group('src').classList.contains('test-run-passing')).toBe(true);
+    expect(groupPositions()).toEqual(positionsBefore);
+    expect(d3Spies.forceSimulation).toHaveBeenCalledTimes(forceCallsBefore);
+  });
+
+  it('renders a failing test and opens its exact stack location', () => {
+    const failure = testFailure();
+    sendState(
+      [nodeState('src/alpha.ts', 'error', [], ['test'])],
+      [],
+      {},
+      {
+        ...testRun('complete', 'failed', ['src/alpha.ts']),
+        failures: { 'src/alpha.ts': [failure] }
+      }
+    );
+    requiredFileCard('src/alpha.ts').click();
+
+    expect(requiredElement<HTMLElement>('test-failure-field').hidden).toBe(false);
+    expect(requiredElement('node-test-failures').textContent)
+      .toContain('test: panel renders state');
+    expect(requiredElement('node-test-failures').textContent)
+      .toContain('AssertionError: expected true to be false');
+
+    requiredElement('node-test-failures')
+      .querySelector<HTMLButtonElement>('.test-failure-entry')
+      ?.click();
+    expect(postedMessages).toContainEqual({
+      type: 'openTestFailure',
+      fileId: 'src/alpha.ts',
+      line: 12,
+      character: 3
+    });
+  });
 });
 
 function createGraph(): WebviewGraph {
@@ -356,10 +423,43 @@ function diagnostic(
 function sendState(
   nodes: GraphNode[],
   agents: AgentSnapshot[] = [],
-  diagnostics: NodeDiagnostics = {}
+  diagnostics: NodeDiagnostics = {},
+  testRunSnapshot?: TestRunSnapshot
 ): void {
-  const update: NodeStateUpdate = { nodes, agents, diagnostics };
+  const update: NodeStateUpdate = {
+    nodes,
+    agents,
+    diagnostics,
+    ...(testRunSnapshot ? { testRun: testRunSnapshot } : {})
+  };
   sendMessage({ type: 'stateUpdate', update });
+}
+
+function testRun(
+  phase: TestRunSnapshot['phase'],
+  outcome: TestRunSnapshot['outcome'],
+  sequence: string[]
+): TestRunSnapshot {
+  return {
+    phase,
+    outcome,
+    sequence,
+    failures: {},
+    message: phase === 'flow' ? 'Tests are flowing.' : 'Tests completed.'
+  };
+}
+
+function testFailure(): TestFailureDetail {
+  return {
+    id: 'failure-1',
+    testName: 'panel renders state',
+    message: 'AssertionError: expected true to be false',
+    stack: 'at renderPanel (src/alpha.ts:13:4)',
+    source: 'test',
+    fileId: 'src/alpha.ts',
+    line: 12,
+    character: 3
+  };
 }
 
 function sendMessage(data: unknown): void {
@@ -422,6 +522,7 @@ function webviewShell(): string {
     <div id="warning"></div>
     <div id="layout-warning"></div>
     <div id="tooltip"></div>
+    <button id="run-tests"></button>
     <button id="reset-view"></button>
     <p id="sidebar-empty"></p>
     <div id="node-details"></div>
@@ -433,6 +534,9 @@ function webviewShell(): string {
     <p id="node-errors"></p>
     <div id="diagnostic-field" hidden>
       <ul id="node-diagnostics"></ul>
+    </div>
+    <div id="test-failure-field" hidden>
+      <ul id="node-test-failures"></ul>
     </div>
     <div id="node-conflict"></div>
     <p id="auto-annotation"></p>

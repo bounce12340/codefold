@@ -24,6 +24,8 @@ import type {
   NodeDiagnostics,
   NodeState,
   NodeStateUpdate,
+  TestFailureDetail,
+  TestRunSnapshot,
   WebviewGraph,
   WorkspaceLayout
 } from '../scanner/model';
@@ -114,6 +116,7 @@ const warning = requireElement<HTMLDivElement>('warning');
 const layoutWarning = requireElement<HTMLDivElement>('layout-warning');
 const tooltip = requireElement<HTMLDivElement>('tooltip');
 const resetViewButton = requireElement<HTMLButtonElement>('reset-view');
+const runTestsButton = requireElement<HTMLButtonElement>('run-tests');
 const sidebarEmpty = requireElement<HTMLParagraphElement>('sidebar-empty');
 const nodeDetails = requireElement<HTMLDivElement>('node-details');
 const nodeName = requireElement<HTMLParagraphElement>('node-name');
@@ -124,6 +127,8 @@ const nodeAgents = requireElement<HTMLParagraphElement>('node-agents');
 const nodeErrors = requireElement<HTMLParagraphElement>('node-errors');
 const diagnosticField = requireElement<HTMLDivElement>('diagnostic-field');
 const nodeDiagnostics = requireElement<HTMLUListElement>('node-diagnostics');
+const testFailureField = requireElement<HTMLDivElement>('test-failure-field');
+const nodeTestFailures = requireElement<HTMLUListElement>('node-test-failures');
 const nodeConflict = requireElement<HTMLDivElement>('node-conflict');
 const autoAnnotation = requireElement<HTMLParagraphElement>('auto-annotation');
 const manualAnnotation = requireElement<HTMLTextAreaElement>('manual-annotation');
@@ -144,6 +149,13 @@ let functionViews = new Map<string, FunctionView>();
 let pendingNodeStates = new Map<string, GraphNode>();
 let agentsById = new Map<string, AgentSnapshot>();
 let diagnosticsByNode = new Map<string, NodeDiagnostic[]>();
+let testRunSnapshot: TestRunSnapshot = {
+  phase: 'idle',
+  outcome: null,
+  sequence: [],
+  failures: {},
+  message: null
+};
 const loadedFunctionFiles = new Set<string>();
 const loadingFunctionFiles = new Set<string>();
 const expandedFunctionFiles = new Set<string>();
@@ -157,6 +169,11 @@ let panState:
   | undefined;
 
 resetViewButton.addEventListener('click', fitToContent);
+runTestsButton.addEventListener('click', () => {
+  runTestsButton.disabled = true;
+  status.textContent = 'Starting configured tests…';
+  vscode.postMessage({ type: 'runTests' });
+});
 saveAnnotationButton.addEventListener('click', saveSelectedAnnotation);
 openFileButton.addEventListener('click', openSelectedFile);
 manualAnnotation.addEventListener('input', previewManualAnnotation);
@@ -191,6 +208,13 @@ function receiveExtensionMessage(event: MessageEvent<unknown>): void {
   }
   if (event.data.type === 'stateUpdate') {
     applyStateUpdate(event.data.update);
+    return;
+  }
+  if (event.data.type === 'testRunError') {
+    runTestsButton.disabled = false;
+    status.textContent = `Test run failed: ${event.data.message}`;
+    layoutWarning.textContent = event.data.message;
+    layoutWarning.hidden = false;
     return;
   }
   if (event.data.type === 'annotationSaved') {
@@ -748,7 +772,15 @@ function applyFunctionPayload(payload: FunctionGraphPayload): void {
   }
   for (const node of payload.nodes) {
     const pending = pendingNodeStates.get(node.id);
-    functionById.set(node.id, pending ? mergeNodeState(node, pending) : node);
+    const current = functionById.get(node.id);
+    functionById.set(
+      node.id,
+      pending
+        ? mergeNodeState(node, pending)
+        : current
+          ? mergeNodeState(node, current)
+          : node
+    );
     pendingNodeStates.delete(node.id);
   }
   for (const edge of payload.edges) {
@@ -962,6 +994,9 @@ function applyStateUpdate(update: NodeStateUpdate): void {
       revealAttentionNode(node);
     }
   }
+  if (update.testRun !== undefined) {
+    applyTestRun(update.testRun);
+  }
   renderAgentHierarchy();
   if (selectedNodeId) {
     const selected = fileById.get(selectedNodeId) ?? functionById.get(selectedNodeId);
@@ -980,7 +1015,10 @@ function mergeNodeState(target: GraphNode, state: GraphNode): GraphNode {
 }
 
 function requiresAttention(state: NodeState): boolean {
-  return state === 'editing' || state === 'dirty' || state === 'error';
+  return state === 'editing'
+    || state === 'dirty'
+    || state === 'verifying'
+    || state === 'error';
 }
 
 function revealAttentionNode(node: GraphNode): void {
@@ -1209,6 +1247,7 @@ function updateSelectedStateDetails(node: GraphNode): void {
     ? node.errorSources.join(', ')
     : 'none';
   renderSelectedDiagnostics(node.id);
+  renderSelectedTestFailures(node.id);
   nodeConflict.hidden = !hasAgentConflict(node);
 }
 
@@ -1242,6 +1281,109 @@ function renderSelectedDiagnostics(nodeId: string): void {
     item.append(button);
     return item;
   }));
+}
+
+function renderSelectedTestFailures(nodeId: string): void {
+  const failures = testRunSnapshot.failures[nodeId] ?? [];
+  testFailureField.hidden = failures.length === 0;
+  nodeTestFailures.replaceChildren(...failures.map((failure) => {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'test-failure-entry';
+    button.innerHTML =
+      `<span class="test-failure-name"></span>`
+      + `<span class="test-failure-message"></span>`
+      + `<pre class="test-failure-stack"></pre>`;
+    requireDescendant<HTMLElement>(button, '.test-failure-name').textContent =
+      `${failure.source}: ${failure.testName}`;
+    requireDescendant<HTMLElement>(button, '.test-failure-message').textContent =
+      failure.message;
+    requireDescendant<HTMLElement>(button, '.test-failure-stack').textContent =
+      failure.stack;
+    button.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'openTestFailure',
+        fileId: failure.fileId,
+        line: failure.line,
+        character: failure.character
+      });
+    });
+    item.append(button);
+    return item;
+  }));
+}
+
+function applyTestRun(snapshot: TestRunSnapshot): void {
+  testRunSnapshot = cloneTestRun(snapshot);
+  runTestsButton.disabled =
+    snapshot.phase === 'running' || snapshot.phase === 'flow';
+  if (snapshot.message) {
+    status.textContent = snapshot.message;
+  }
+  for (const group of groups) {
+    group.element.classList.remove('test-run-passing');
+  }
+  if (snapshot.phase === 'complete' && snapshot.outcome === 'passed') {
+    const touchedGroups = new Set(
+      snapshot.sequence
+        .map((nodeId) => fileById.get(nodeId)?.id ?? functionById.get(nodeId)?.path)
+        .map((fileId) => fileId ? folderByFileId.get(fileId) : undefined)
+        .filter((groupId): groupId is string => groupId !== undefined)
+    );
+    for (const groupId of touchedGroups) {
+      const group = groupById.get(groupId);
+      if (!group) {
+        continue;
+      }
+      group.element.classList.add('test-run-passing');
+      setGroupExpanded(group, false, false);
+    }
+  }
+  drawEdges();
+  if (selectedNodeId) {
+    renderSelectedTestFailures(selectedNodeId);
+  }
+}
+
+function applyFlowPresentation(): void {
+  for (const card of Array.from(nodeLayer.querySelectorAll<HTMLElement>(
+    '.file-card, .function-card'
+  ))) {
+    card.classList.remove('test-flow-active');
+    card.style.removeProperty('--test-flow-order');
+  }
+  for (const edge of Array.from(
+    edgeLayer.querySelectorAll<SVGPathElement>('.dependency')
+  )) {
+    edge.classList.remove('test-flow-edge');
+    edge.style.removeProperty('--test-flow-order');
+  }
+  if (testRunSnapshot.phase !== 'flow') {
+    return;
+  }
+  for (const [index, nodeId] of testRunSnapshot.sequence.entries()) {
+    const card = Array.from(nodeLayer.querySelectorAll<HTMLElement>(
+      '.file-card, .function-card'
+    )).find((candidate) => candidate.dataset.nodeId === nodeId);
+    if (card) {
+      card.classList.add('test-flow-active');
+      card.style.setProperty('--test-flow-order', String(index));
+    }
+    const nextId = testRunSnapshot.sequence[index + 1];
+    if (!nextId) {
+      continue;
+    }
+    const edge = Array.from(
+      edgeLayer.querySelectorAll<SVGPathElement>('.dependency')
+    ).find((candidate) =>
+      candidate.dataset.from === nodeId && candidate.dataset.to === nextId
+    );
+    if (edge) {
+      edge.classList.add('test-flow-edge');
+      edge.style.setProperty('--test-flow-order', String(index));
+    }
+  }
 }
 
 function previewManualAnnotation(): void {
@@ -1360,6 +1502,8 @@ function drawEdges(): void {
       ].filter(Boolean).join(' ')
     );
     path.setAttribute('marker-end', 'url(#dependency-arrow)');
+    path.dataset.from = visibleEdge.from;
+    path.dataset.to = visibleEdge.to;
     path.setAttribute(
       'stroke-width',
       String(Math.min(8, 1.4 + Math.log2(visibleEdge.count) * 1.8))
@@ -1385,6 +1529,7 @@ function drawEdges(): void {
       edgeLayer.append(label);
     }
   }
+  applyFlowPresentation();
 }
 
 function visibleEdges(edges: readonly GraphEdge[]): VisibleEdge[] {
@@ -1756,6 +1901,13 @@ function clearGraph(): void {
   pendingNodeStates.clear();
   agentsById.clear();
   diagnosticsByNode.clear();
+  testRunSnapshot = {
+    phase: 'idle',
+    outcome: null,
+    sequence: [],
+    failures: {},
+    message: null
+  };
   loadedFunctionFiles.clear();
   loadingFunctionFiles.clear();
   expandedFunctionFiles.clear();
@@ -1767,6 +1919,9 @@ function clearGraph(): void {
   nodeDetails.hidden = true;
   diagnosticField.hidden = true;
   nodeDiagnostics.replaceChildren();
+  testFailureField.hidden = true;
+  nodeTestFailures.replaceChildren();
+  runTestsButton.disabled = false;
   tooltip.hidden = true;
   renderAgentHierarchy();
 }
@@ -1810,6 +1965,19 @@ function cloneDiagnostic(diagnostic: NodeDiagnostic): NodeDiagnostic {
   };
 }
 
+function cloneTestRun(snapshot: TestRunSnapshot): TestRunSnapshot {
+  return {
+    ...snapshot,
+    sequence: [...snapshot.sequence],
+    failures: Object.fromEntries(
+      Object.entries(snapshot.failures).map(([nodeId, failures]) => [
+        nodeId,
+        failures.map((failure) => ({ ...failure }))
+      ])
+    )
+  };
+}
+
 function requireElement<T extends Element>(id: string): T {
   const element = document.getElementById(id);
   if (element === null) {
@@ -1836,6 +2004,7 @@ function isExtensionMessage(
   | { type: 'functions'; payload: FunctionGraphPayload }
   | { type: 'stateUpdate'; update: NodeStateUpdate }
   | { type: 'error'; message: string }
+  | { type: 'testRunError'; message: string }
   | { type: 'annotationSaved'; nodeId: string; manual: string | null }
   | { type: 'annotationSaveError'; nodeId: string; message: string }
   | { type: 'layoutSaved' }
@@ -1873,18 +2042,83 @@ function isExtensionMessage(
         !('diagnostics' in update)
         || isNodeDiagnostics(update.diagnostics)
       )
+      && (
+        !('testRun' in update)
+        || isTestRunSnapshot(update.testRun)
+      )
     );
   }
   if (type === 'layoutSaved') {
     return true;
   }
-  if (type === 'error' || type === 'layoutSaveError') {
+  if (type === 'error' || type === 'layoutSaveError' || type === 'testRunError') {
     return 'message' in value && typeof (value as { message: unknown }).message === 'string';
   }
   return (
     (type === 'annotationSaved' || type === 'annotationSaveError')
     && 'nodeId' in value
     && typeof (value as { nodeId: unknown }).nodeId === 'string'
+  );
+}
+
+function isTestRunSnapshot(value: unknown): value is TestRunSnapshot {
+  if (
+    typeof value !== 'object'
+    || value === null
+    || !('phase' in value)
+    || (
+      value.phase !== 'idle'
+      && value.phase !== 'running'
+      && value.phase !== 'flow'
+      && value.phase !== 'complete'
+    )
+    || !('outcome' in value)
+    || (
+      value.outcome !== null
+      && value.outcome !== 'passed'
+      && value.outcome !== 'failed'
+    )
+    || !('sequence' in value)
+    || !Array.isArray(value.sequence)
+    || !value.sequence.every((nodeId) => typeof nodeId === 'string')
+    || !('failures' in value)
+    || typeof value.failures !== 'object'
+    || value.failures === null
+    || Array.isArray(value.failures)
+    || !('message' in value)
+    || (value.message !== null && typeof value.message !== 'string')
+  ) {
+    return false;
+  }
+  return Object.values(value.failures).every((failures) =>
+    Array.isArray(failures) && failures.every(isTestFailureDetail)
+  );
+}
+
+function isTestFailureDetail(value: unknown): value is TestFailureDetail {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && 'id' in value
+    && typeof value.id === 'string'
+    && 'testName' in value
+    && typeof value.testName === 'string'
+    && 'message' in value
+    && typeof value.message === 'string'
+    && 'stack' in value
+    && typeof value.stack === 'string'
+    && 'source' in value
+    && (value.source === 'test' || value.source === 'runtime')
+    && 'fileId' in value
+    && typeof value.fileId === 'string'
+    && 'line' in value
+    && typeof value.line === 'number'
+    && Number.isInteger(value.line)
+    && value.line >= 0
+    && 'character' in value
+    && typeof value.character === 'number'
+    && Number.isInteger(value.character)
+    && value.character >= 0
   );
 }
 

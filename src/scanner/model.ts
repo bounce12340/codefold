@@ -61,10 +61,32 @@ export interface NodeDiagnostic {
 
 export type NodeDiagnostics = Record<string, NodeDiagnostic[]>;
 
+export interface TestFailureDetail {
+  id: string;
+  testName: string;
+  message: string;
+  stack: string;
+  source: 'test' | 'runtime';
+  fileId: string;
+  line: number;
+  character: number;
+}
+
+export type NodeTestFailures = Record<string, TestFailureDetail[]>;
+
+export interface TestRunSnapshot {
+  phase: 'idle' | 'running' | 'flow' | 'complete';
+  outcome: 'passed' | 'failed' | null;
+  sequence: string[];
+  failures: NodeTestFailures;
+  message: string | null;
+}
+
 export interface NodeStateUpdate {
   nodes: GraphNode[];
   agents: AgentSnapshot[];
   diagnostics?: NodeDiagnostics;
+  testRun?: TestRunSnapshot;
 }
 
 export interface FileGraph {

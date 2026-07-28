@@ -12,6 +12,16 @@ npm run preview
 Phase 1 函式節點與 call 邊。Phase 3 可用 `diagnostics` 核對檔案、函式
 紅閃與側欄訊息，`diagnostics-warning` 核對 Warning 不染紅，
 `diagnostics-multi-source` 核對 error 優先於 editing 且錯誤來源並存。
+Phase 4 可用 `verifying` 核對函式與 call 邊的依序光流，
+`passing` 核對全綠後群組收合且座標不變，`test-failure` 核對失敗節點
+紅閃與側欄 stack trace，`test-mixed` 核對同畫面的通過綠與失敗紅。
+例如直接開啟：
+
+- `http://127.0.0.1:4173/tools/preview/?scenario=verifying`
+- `http://127.0.0.1:4173/tools/preview/?scenario=passing`
+- `http://127.0.0.1:4173/tools/preview/?scenario=test-failure`
+- `http://127.0.0.1:4173/tools/preview/?scenario=test-mixed`
+
 錯誤 token（Phase 2 驗收 6）沒有畫布呈現，仍由
 `tests/hookServer.test.ts` 驗證。
 
