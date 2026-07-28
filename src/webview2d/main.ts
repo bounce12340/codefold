@@ -20,6 +20,8 @@ import type {
   GraphNode,
   GroupLayout,
   LayoutPoint,
+  NodeDiagnostic,
+  NodeDiagnostics,
   NodeState,
   NodeStateUpdate,
   WebviewGraph,
@@ -120,6 +122,8 @@ const nodeLanguage = requireElement<HTMLParagraphElement>('node-language');
 const nodeState = requireElement<HTMLParagraphElement>('node-state');
 const nodeAgents = requireElement<HTMLParagraphElement>('node-agents');
 const nodeErrors = requireElement<HTMLParagraphElement>('node-errors');
+const diagnosticField = requireElement<HTMLDivElement>('diagnostic-field');
+const nodeDiagnostics = requireElement<HTMLUListElement>('node-diagnostics');
 const nodeConflict = requireElement<HTMLDivElement>('node-conflict');
 const autoAnnotation = requireElement<HTMLParagraphElement>('auto-annotation');
 const manualAnnotation = requireElement<HTMLTextAreaElement>('manual-annotation');
@@ -139,6 +143,7 @@ let functionEdges = new Map<string, GraphEdge>();
 let functionViews = new Map<string, FunctionView>();
 let pendingNodeStates = new Map<string, GraphNode>();
 let agentsById = new Map<string, AgentSnapshot>();
+let diagnosticsByNode = new Map<string, NodeDiagnostic[]>();
 const loadedFunctionFiles = new Set<string>();
 const loadingFunctionFiles = new Set<string>();
 const expandedFunctionFiles = new Set<string>();
@@ -921,6 +926,14 @@ function updateFileCardContent(card: HTMLElement, file: GraphNode): void {
 
 function applyStateUpdate(update: NodeStateUpdate): void {
   agentsById = new Map(update.agents.map((agent) => [agent.id, agent]));
+  if (update.diagnostics !== undefined) {
+    diagnosticsByNode = new Map(
+      Object.entries(update.diagnostics).map(([nodeId, diagnostics]) => [
+        nodeId,
+        diagnostics.map(cloneDiagnostic)
+      ])
+    );
+  }
   for (const incoming of update.nodes) {
     const current = fileById.get(incoming.id) ?? functionById.get(incoming.id);
     if (current) {
@@ -1195,7 +1208,40 @@ function updateSelectedStateDetails(node: GraphNode): void {
   nodeErrors.textContent = node.errorSources.length > 0
     ? node.errorSources.join(', ')
     : 'none';
+  renderSelectedDiagnostics(node.id);
   nodeConflict.hidden = !hasAgentConflict(node);
+}
+
+function renderSelectedDiagnostics(nodeId: string): void {
+  const diagnostics = diagnosticsByNode.get(nodeId) ?? [];
+  diagnosticField.hidden = diagnostics.length === 0;
+  nodeDiagnostics.replaceChildren(...diagnostics.map((diagnostic) => {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `diagnostic-entry diagnostic-${diagnostic.severity}`;
+    button.innerHTML =
+      `<span class="diagnostic-heading"></span>`
+      + `<span class="diagnostic-message"></span>`
+      + `<span class="diagnostic-location"></span>`;
+    requireDescendant<HTMLElement>(button, '.diagnostic-heading').textContent =
+      `${diagnostic.source} · ${diagnostic.severity}`;
+    requireDescendant<HTMLElement>(button, '.diagnostic-message').textContent =
+      diagnostic.message;
+    requireDescendant<HTMLElement>(button, '.diagnostic-location').textContent =
+      `line ${diagnostic.range.startLine + 1}, column `
+      + `${diagnostic.range.startCharacter + 1}`;
+    button.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'openDiagnostic',
+        fileId: diagnostic.fileId,
+        line: diagnostic.range.startLine,
+        character: diagnostic.range.startCharacter
+      });
+    });
+    item.append(button);
+    return item;
+  }));
 }
 
 function previewManualAnnotation(): void {
@@ -1709,6 +1755,7 @@ function clearGraph(): void {
   functionViews.clear();
   pendingNodeStates.clear();
   agentsById.clear();
+  diagnosticsByNode.clear();
   loadedFunctionFiles.clear();
   loadingFunctionFiles.clear();
   expandedFunctionFiles.clear();
@@ -1718,6 +1765,8 @@ function clearGraph(): void {
   manualAnnotation.disabled = false;
   sidebarEmpty.hidden = false;
   nodeDetails.hidden = true;
+  diagnosticField.hidden = true;
+  nodeDiagnostics.replaceChildren();
   tooltip.hidden = true;
   renderAgentHierarchy();
 }
@@ -1752,6 +1801,13 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 function escapeSelector(value: string): string {
   return CSS.escape(value);
+}
+
+function cloneDiagnostic(diagnostic: NodeDiagnostic): NodeDiagnostic {
+  return {
+    ...diagnostic,
+    range: { ...diagnostic.range }
+  };
 }
 
 function requireElement<T extends Element>(id: string): T {
@@ -1813,6 +1869,10 @@ function isExtensionMessage(
       && Array.isArray(update.nodes)
       && 'agents' in update
       && Array.isArray(update.agents)
+      && (
+        !('diagnostics' in update)
+        || isNodeDiagnostics(update.diagnostics)
+      )
     );
   }
   if (type === 'layoutSaved') {
@@ -1825,5 +1885,54 @@ function isExtensionMessage(
     (type === 'annotationSaved' || type === 'annotationSaveError')
     && 'nodeId' in value
     && typeof (value as { nodeId: unknown }).nodeId === 'string'
+  );
+}
+
+function isNodeDiagnostics(value: unknown): value is NodeDiagnostics {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && Object.values(value).every((diagnostics) =>
+      Array.isArray(diagnostics)
+      && diagnostics.every((diagnostic) =>
+        typeof diagnostic === 'object'
+        && diagnostic !== null
+        && 'id' in diagnostic
+        && typeof diagnostic.id === 'string'
+        && 'fileId' in diagnostic
+        && typeof diagnostic.fileId === 'string'
+        && 'source' in diagnostic
+        && typeof diagnostic.source === 'string'
+        && 'message' in diagnostic
+        && typeof diagnostic.message === 'string'
+        && 'severity' in diagnostic
+        && (
+          diagnostic.severity === 'error'
+          || diagnostic.severity === 'warning'
+          || diagnostic.severity === 'information'
+          || diagnostic.severity === 'hint'
+        )
+        && 'range' in diagnostic
+        && typeof diagnostic.range === 'object'
+        && diagnostic.range !== null
+        && 'startLine' in diagnostic.range
+        && typeof diagnostic.range.startLine === 'number'
+        && Number.isInteger(diagnostic.range.startLine)
+        && diagnostic.range.startLine >= 0
+        && 'startCharacter' in diagnostic.range
+        && typeof diagnostic.range.startCharacter === 'number'
+        && Number.isInteger(diagnostic.range.startCharacter)
+        && diagnostic.range.startCharacter >= 0
+        && 'endLine' in diagnostic.range
+        && typeof diagnostic.range.endLine === 'number'
+        && Number.isInteger(diagnostic.range.endLine)
+        && diagnostic.range.endLine >= 0
+        && 'endCharacter' in diagnostic.range
+        && typeof diagnostic.range.endCharacter === 'number'
+        && Number.isInteger(diagnostic.range.endCharacter)
+        && diagnostic.range.endCharacter >= 0
+      )
+    )
   );
 }

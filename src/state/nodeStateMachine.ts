@@ -158,6 +158,27 @@ export class NodeStateStore {
     });
   }
 
+  replaceErrorSource(
+    source: GraphNode['errorSources'][number],
+    activeNodeIds: readonly string[]
+  ): void {
+    const active = new Set(activeNodeIds);
+    const changed: string[] = [];
+    for (const [nodeId, signals] of this.signals) {
+      const shouldHaveSource = active.has(nodeId);
+      if (signals.errorSources.has(source) === shouldHaveSource) {
+        continue;
+      }
+      if (shouldHaveSource) {
+        signals.errorSources.add(source);
+      } else {
+        signals.errorSources.delete(source);
+      }
+      changed.push(nodeId);
+    }
+    this.syncAndEmit(changed);
+  }
+
   dispose(): void {
     for (const signals of this.signals.values()) {
       if (signals.debounceTimer) {

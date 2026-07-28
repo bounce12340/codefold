@@ -43,9 +43,28 @@ export interface AgentSnapshot extends AgentInfo {
   workAreas: string[];
 }
 
+export type DiagnosticSeverity = 'error' | 'warning' | 'information' | 'hint';
+
+export interface NodeDiagnostic {
+  id: string;
+  fileId: string;
+  source: string;
+  message: string;
+  severity: DiagnosticSeverity;
+  range: {
+    startLine: number;
+    startCharacter: number;
+    endLine: number;
+    endCharacter: number;
+  };
+}
+
+export type NodeDiagnostics = Record<string, NodeDiagnostic[]>;
+
 export interface NodeStateUpdate {
   nodes: GraphNode[];
   agents: AgentSnapshot[];
+  diagnostics?: NodeDiagnostics;
 }
 
 export interface FileGraph {

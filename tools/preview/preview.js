@@ -12,7 +12,10 @@
     'error',
     'passing',
     'status-colors',
-    'functions'
+    'functions',
+    'diagnostics',
+    'diagnostics-warning',
+    'diagnostics-multi-source'
   ];
   const scenarios = {
     clean: {
@@ -140,6 +143,96 @@
             ['codex-worker']
           )
         ], agents);
+      }
+    },
+    diagnostics: {
+      label: 'Error diagnostics on file and function',
+      acceptance: 'Phase 3 acceptance 1 — red flash and diagnostic details',
+      run: () => {
+        const detail = diagnostic(
+          'src/ui/panel.ts',
+          'error',
+          14,
+          8,
+          "Type 'string' is not assignable to type 'number'.",
+          'tsc'
+        );
+        sendGraph();
+        sendState(
+          [
+            fileUpdate('src/ui/panel.ts', 'error', [], ['diagnostic']),
+            functionUpdate(
+              'src/ui/panel.ts#renderPanel',
+              'error',
+              [],
+              ['diagnostic']
+            )
+          ],
+          [],
+          {
+            'src/ui/panel.ts': [detail],
+            'src/ui/panel.ts#renderPanel': [detail]
+          }
+        );
+        selectNodeLater('src/ui/panel.ts#renderPanel');
+      }
+    },
+    'diagnostics-warning': {
+      label: 'Warning diagnostic without error state',
+      acceptance: 'Phase 3 acceptance 3 — warning details, no red card',
+      run: () => {
+        const detail = diagnostic(
+          'src/ui/canvas.ts',
+          'warning',
+          25,
+          4,
+          'Variable is declared but its value is never read.',
+          'eslint'
+        );
+        sendGraph(['src']);
+        sendState(
+          [fileUpdate('src/ui/canvas.ts', 'idle')],
+          [],
+          { 'src/ui/canvas.ts': [detail] }
+        );
+        selectNodeLater('src/ui/canvas.ts');
+      }
+    },
+    'diagnostics-multi-source': {
+      label: 'Diagnostic error while an agent is editing',
+      acceptance: 'Phase 3 priority — error beats editing and sources coexist',
+      run: () => {
+        const agents = [
+          agent(
+            'claude-main',
+            'Claude main',
+            null,
+            'diamond-violet',
+            ['src/services/api.ts']
+          )
+        ];
+        const detail = diagnostic(
+          'src/services/api.ts',
+          'error',
+          18,
+          2,
+          "Property 'payload' does not exist on type 'HookEvent'.",
+          'tsc'
+        );
+        sendGraph();
+        sendState(
+          [
+            fileUpdate(
+              'src/services/api.ts',
+              'error',
+              ['claude-main'],
+              ['diagnostic', 'agent']
+            )
+          ],
+          agents,
+          { 'src/services/api.ts': [detail] }
+        );
+        selectNodeLater('src/services/api.ts');
       }
     }
   };
@@ -365,6 +458,8 @@
         borderWidth: style.borderWidth,
         boxShadow: style.boxShadow,
         backgroundColor: style.backgroundColor,
+        animationName: style.animationName,
+        animationDuration: style.animationDuration,
         lampColor: lampStyle?.backgroundColor || '',
         lampWidth: lampStyle?.width || '',
         lampHeight: lampStyle?.height || '',
@@ -421,11 +516,20 @@
     }, '*');
   }
 
-  function sendState(nodes, agents = []) {
+  function sendState(nodes, agents = [], diagnostics = {}) {
     window.postMessage({
       type: 'stateUpdate',
-      update: { nodes, agents }
+      update: { nodes, agents, diagnostics }
     }, '*');
+  }
+
+  function selectNodeLater(nodeId) {
+    setTimeout(() => {
+      const card = Array.from(document.querySelectorAll('[data-node-id]'))
+        .find((candidate) => candidate.dataset.nodeId === nodeId);
+      card?.click();
+      scheduleVisualMeasurement();
+    }, 180);
   }
 
   function sendFunctionPayload(fileId) {
@@ -606,6 +710,22 @@
       state,
       editingAgents,
       errorSources
+    };
+  }
+
+  function diagnostic(fileId, severity, line, character, message, source) {
+    return {
+      id: `${fileId}:${line}:${character}:${severity}:${source}`,
+      fileId,
+      source,
+      message,
+      severity,
+      range: {
+        startLine: line,
+        startCharacter: character,
+        endLine: line,
+        endCharacter: character + 4
+      }
     };
   }
 

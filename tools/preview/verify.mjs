@@ -26,7 +26,10 @@ try {
     ['passing', 'dark'],
     ['status-colors', 'dark'],
     ['status-colors', 'light'],
-    ['functions', 'dark']
+    ['functions', 'dark'],
+    ['diagnostics', 'dark'],
+    ['diagnostics-warning', 'dark'],
+    ['diagnostics-multi-source', 'dark']
   ];
   const results = [];
   let baselinePositions;
@@ -85,6 +88,7 @@ try {
       || scenarioId === 'dirty'
       || scenarioId === 'status-colors'
       || scenarioId === 'functions'
+      || scenarioId.startsWith('diagnostics')
     ) {
       console.log(`${resultId}-metrics: ${JSON.stringify(summary.metrics)}`);
     }
@@ -193,6 +197,8 @@ function summarizeDom(html) {
   const encodedMetrics = attributeValue(htmlTag, 'data-preview-metrics');
   const countState = (state) =>
     fileCards.filter(({ classes }) => classes.includes(`node-state-${state}`)).length;
+  const countFunctionState = (state) =>
+    functionCards.filter(({ classes }) => classes.includes(`node-state-${state}`)).length;
   return {
     scenario: attributeValue(htmlTag, 'data-preview-scenario'),
     metrics: encodedMetrics === ''
@@ -216,10 +222,16 @@ function summarizeDom(html) {
     conflictText: html.includes('Potential conflicts') ? 'Potential conflicts' : '',
     nestedAgents: hierarchy.nested,
     rootAgents: hierarchy.roots,
+    diagnosticEntries: elementsWithClass(html, 'diagnostic-entry').length,
+    diagnosticText: textById(html, 'node-diagnostics'),
+    selectedState: textById(html, 'node-state'),
+    selectedErrorSources: textById(html, 'node-errors'),
     editing: countState('editing'),
     dirty: countState('dirty'),
     error: countState('error'),
-    passing: countState('passing')
+    passing: countState('passing'),
+    idle: countState('idle'),
+    functionError: countFunctionState('error')
   };
 }
 
@@ -237,6 +249,22 @@ function elementsWithClass(html, className) {
 function attributeValue(tag, name) {
   const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return tag.match(new RegExp(`\\b${escapedName}="([^"]*)"`))?.[1] ?? '';
+}
+
+function textById(html, id) {
+  const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = html.match(
+    new RegExp(`<([a-z][a-z0-9-]*)\\b[^>]*\\bid="${escapedId}"[^>]*>([\\s\\S]*?)<\\/\\1>`, 'i')
+  );
+  return (match?.[2] ?? '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&apos;|&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function summarizeAgentHierarchy(html) {
@@ -351,6 +379,42 @@ function assertScenario(summary) {
         && maxDuration(summary.metrics.functions.groupTransitionDuration) <= 0.3,
         'function expansion geometry exceeds 300ms'
       );
+      break;
+    case 'diagnostics':
+      assert(summary.error === 1, 'diagnostic Error did not mark the file red');
+      assert(summary.functionError === 1, 'diagnostic Error did not mark the function red');
+      assert(summary.diagnosticEntries === 1, 'diagnostic details are missing');
+      assert(
+        summary.diagnosticText.includes('tsc · error')
+        && summary.diagnosticText.includes("Type 'string' is not assignable"),
+        'diagnostic source or message is missing'
+      );
+      assert(summary.selectedState === 'error', 'diagnostic function is not selected as error');
+      assert(
+        summary.metrics.stateCards.error.animationName.includes('error'),
+        'diagnostic Error card is not using the red error animation'
+      );
+      break;
+    case 'diagnostics-warning':
+      assert(summary.error === 0, 'Warning incorrectly marked a file red');
+      assert(summary.functionError === 0, 'Warning incorrectly marked a function red');
+      assert(summary.diagnosticEntries === 1, 'Warning details are missing');
+      assert(
+        summary.diagnosticText.includes('eslint · warning'),
+        'Warning source and severity are missing'
+      );
+      assert(summary.selectedState === 'idle', 'Warning changed the node state');
+      break;
+    case 'diagnostics-multi-source':
+      assert(summary.error === 1 && summary.editing === 0, 'Error did not outrank editing');
+      assert(summary.badges === 1, 'Editing agent badge is missing from the error card');
+      assert(summary.diagnosticEntries === 1, 'Multi-source diagnostic details are missing');
+      assert(
+        summary.selectedErrorSources.includes('diagnostic')
+        && summary.selectedErrorSources.includes('agent'),
+        'Multiple errorSources were not preserved'
+      );
+      assert(summary.selectedState === 'error', 'Multi-source node did not resolve to error');
       break;
     default:
       throw new Error(`Unexpected preview scenario: ${summary.scenario}`);

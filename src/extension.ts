@@ -15,6 +15,10 @@ import {
   readWorkspaceLayout,
   writeWorkspaceLayout
 } from './layout/workspaceLayout';
+import {
+  DiagnosticTracker,
+  type DiagnosticInput
+} from './diagnostics/diagnosticTracker';
 import { writeWorkspaceNote } from './scanner/notes';
 import { scanWorkspaceRoot } from './scanner/scanWorkspace';
 import { NodeStateStore } from './state/nodeStateMachine';
@@ -259,9 +263,11 @@ function registerGraphCommand(
           }
           return;
         }
-        const uri = fileUris.get(message.nodeId);
+        const targetNodeId =
+          message.type === 'openDiagnostic' ? message.fileId : message.nodeId;
+        const uri = fileUris.get(targetNodeId);
         if (uri === undefined) {
-          output.appendLine(`Webview requested unknown node: ${message.nodeId}`);
+          output.appendLine(`Webview requested unknown node: ${targetNodeId}`);
           return;
         }
         try {
@@ -270,9 +276,14 @@ function registerGraphCommand(
             preview: false,
             preserveFocus: false
           });
-          const startLine = functionStartLines.get(message.nodeId);
+          const startLine = message.type === 'openDiagnostic'
+            ? message.line
+            : functionStartLines.get(message.nodeId);
           if (startLine !== undefined) {
-            const position = new vscode.Position(startLine, 0);
+            const position = new vscode.Position(
+              startLine,
+              message.type === 'openDiagnostic' ? message.character : 0
+            );
             editor.selection = new vscode.Selection(position, position);
             editor.revealRange(
               new vscode.Range(position, position),
@@ -595,16 +606,68 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
     }
     const update: NodeStateUpdate = {
       nodes,
-      agents: agentRegistry.snapshots()
+      agents: agentRegistry.snapshots(),
+      diagnostics: diagnosticTracker?.snapshot() ?? {}
     };
     try {
       await panel.webview.postMessage({ type: 'stateUpdate', update });
     } catch (error) {
-      output.appendLine(`Could not update Phase 2 webview state: ${formatError(error)}`);
+      output.appendLine(`Could not update CodeFold webview state: ${formatError(error)}`);
     }
   };
   const stateStore = new NodeStateStore(allNodes, (nodes) => {
     void postState(nodes);
+  });
+  const diagnosticTracker = new DiagnosticTracker(allNodes, stateStore);
+
+  const collectDiagnostics = (): DiagnosticInput[] => {
+    const inputs: DiagnosticInput[] = [];
+    for (const [uri, diagnostics] of vscode.languages.getDiagnostics()) {
+      const fileId = fileIdByFsPath.get(normalizeFsPath(uri.fsPath));
+      if (!fileId) {
+        continue;
+      }
+      for (const diagnostic of diagnostics) {
+        inputs.push({
+          fileId,
+          source: diagnostic.source,
+          message: diagnostic.message,
+          severity: diagnosticSeverity(diagnostic.severity),
+          range: {
+            startLine: diagnostic.range.start.line,
+            startCharacter: diagnostic.range.start.character,
+            endLine: diagnostic.range.end.line,
+            endCharacter: diagnostic.range.end.character
+          }
+        });
+      }
+    }
+    return inputs;
+  };
+
+  const refreshDiagnostics = (): void => {
+    try {
+      const inputs = collectDiagnostics();
+      diagnosticTracker.apply(inputs);
+      void postState([]);
+      const errorCount = inputs.filter((diagnostic) =>
+        diagnostic.severity === 'error'
+      ).length;
+      output.appendLine(
+        `Diagnostics refreshed: ${errorCount} Error and `
+        + `${inputs.length - errorCount} non-Error item(s) in the scanned graph.`
+      );
+    } catch (error) {
+      output.appendLine(`Could not refresh VS Code diagnostics: ${formatError(error)}`);
+      output.show(true);
+    }
+  };
+  const diagnosticChange = vscode.languages.onDidChangeDiagnostics((event) => {
+    if (event.uris.some((uri) =>
+      fileIdByFsPath.has(normalizeFsPath(uri.fsPath))
+    )) {
+      refreshDiagnostics();
+    }
   });
 
   const watcher = vscode.workspace.createFileSystemWatcher(
@@ -764,6 +827,7 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
       }
     }
   }
+  refreshDiagnostics();
 
   return {
     async handleAgentEvent(event: AgentHookEvent): Promise<void> {
@@ -806,9 +870,25 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
       stateStore.dispose();
       watcherChange.dispose();
       documentChange.dispose();
+      diagnosticChange.dispose();
       watcher.dispose();
     }
   };
+}
+
+function diagnosticSeverity(
+  severity: vscode.DiagnosticSeverity
+): DiagnosticInput['severity'] {
+  if (severity === vscode.DiagnosticSeverity.Error) {
+    return 'error';
+  }
+  if (severity === vscode.DiagnosticSeverity.Warning) {
+    return 'warning';
+  }
+  if (severity === vscode.DiagnosticSeverity.Information) {
+    return 'information';
+  }
+  return 'hint';
 }
 
 function resolveFileId(
@@ -1024,6 +1104,7 @@ function get2dWebviewHtml(
     .file-card.node-state-error, .function-card.node-state-error {
       border-color: var(--state-error);
       border-width: 2px;
+      animation: error-flash 720ms ease-in-out infinite alternate;
     }
     .file-card.node-state-passing, .function-card.node-state-passing {
       border-color: var(--state-passing);
@@ -1043,6 +1124,16 @@ function get2dWebviewHtml(
       to {
         box-shadow: 0 0 0 4px color-mix(in srgb, var(--state-editing) 38%, transparent),
           0 0 22px color-mix(in srgb, var(--state-editing) 52%, transparent);
+      }
+    }
+    @keyframes error-flash {
+      from {
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-error) 35%, transparent),
+          0 3px 10px color-mix(in srgb, #000 25%, transparent);
+      }
+      to {
+        box-shadow: 0 0 0 4px color-mix(in srgb, var(--state-error) 42%, transparent),
+          0 0 22px color-mix(in srgb, var(--state-error) 58%, transparent);
       }
     }
     .file-title {
@@ -1224,6 +1315,29 @@ function get2dWebviewHtml(
       color: var(--vscode-descriptionForeground); font-size: 12px;
     }
     #save-status.error { color: var(--vscode-errorForeground); }
+    #node-diagnostics {
+      display: grid; gap: 7px; margin: 0; padding: 0; list-style: none;
+    }
+    .diagnostic-entry {
+      display: grid; gap: 3px; width: 100%; padding: 7px 8px;
+      color: var(--vscode-foreground); text-align: left; cursor: pointer;
+      border: 1px solid var(--vscode-widget-border, var(--neutral));
+      border-left: 3px solid var(--state-neutral);
+      border-radius: 4px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    }
+    .diagnostic-entry:hover { border-color: var(--vscode-foreground); }
+    .diagnostic-entry:focus-visible {
+      outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px;
+    }
+    .diagnostic-entry.diagnostic-error { border-left-color: var(--state-error); }
+    .diagnostic-heading {
+      font-size: 10px; font-weight: 750; text-transform: capitalize;
+    }
+    .diagnostic-message { font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
+    .diagnostic-location {
+      color: var(--vscode-descriptionForeground); font-size: 10px;
+    }
     #agent-panel {
       margin-top: 18px; padding-top: 14px;
       border-top: 1px solid var(--vscode-sideBar-border, var(--vscode-widget-border));
@@ -1250,9 +1364,16 @@ function get2dWebviewHtml(
       .file-card.node-state-editing, .function-card.node-state-editing {
         animation: editing-breathe-reduced 3s ease-in-out infinite !important;
       }
+      .file-card.node-state-error, .function-card.node-state-error {
+        animation: error-breathe-reduced 3s ease-in-out infinite !important;
+      }
       @keyframes editing-breathe-reduced {
         from { box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-editing) 28%, transparent); }
         to { box-shadow: 0 0 0 2px color-mix(in srgb, var(--state-editing) 40%, transparent); }
+      }
+      @keyframes error-breathe-reduced {
+        from { box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-error) 30%, transparent); }
+        to { box-shadow: 0 0 0 2px color-mix(in srgb, var(--state-error) 44%, transparent); }
       }
     }
   </style>
@@ -1294,6 +1415,10 @@ function get2dWebviewHtml(
       <div class="field"><span class="field-label">State</span><p id="node-state" class="field-value"></p></div>
       <div class="field"><span class="field-label">Editing agents</span><p id="node-agents" class="field-value"></p></div>
       <div class="field"><span class="field-label">Error sources</span><p id="node-errors" class="field-value"></p></div>
+      <div id="diagnostic-field" class="field" hidden>
+        <span class="field-label">Diagnostics</span>
+        <ul id="node-diagnostics"></ul>
+      </div>
       <div id="node-conflict" class="field" hidden>Potential conflict: multiple agents are editing this node.</div>
       <div class="field">
         <span class="field-label">Automatic annotation</span>
@@ -1455,6 +1580,12 @@ function isWebviewMessage(
 ): message is
   | { type: 'ready' }
   | { type: 'openFile'; nodeId: string }
+  | {
+    type: 'openDiagnostic';
+    fileId: string;
+    line: number;
+    character: number;
+  }
   | { type: 'loadFunctions'; fileId: string }
   | { type: 'saveAnnotation'; nodeId: string; manual: string }
   | { type: 'saveLayout'; layout: WorkspaceLayout } {
@@ -1482,6 +1613,21 @@ function isWebviewMessage(
         'manual' in message
         && typeof (message as { manual: unknown }).manual === 'string'
       );
+  }
+  if (
+    type === 'openDiagnostic'
+    && 'fileId' in message
+    && typeof message.fileId === 'string'
+    && 'line' in message
+    && typeof message.line === 'number'
+    && Number.isInteger(message.line)
+    && message.line >= 0
+    && 'character' in message
+    && typeof message.character === 'number'
+    && Number.isInteger(message.character)
+    && message.character >= 0
+  ) {
+    return true;
   }
   if (
     type === 'loadFunctions'

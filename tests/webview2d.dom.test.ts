@@ -5,6 +5,8 @@ import { AgentRegistry } from '../src/agents/agentRegistry';
 import type {
   AgentSnapshot,
   GraphNode,
+  NodeDiagnostic,
+  NodeDiagnostics,
   NodeState,
   NodeStateUpdate,
   WebviewGraph
@@ -215,6 +217,48 @@ describe('Phase 2 webview DOM rendering', () => {
     expect(child?.querySelector(':scope > .agent-line > .agent-name')?.textContent)
       .toBe('worker one');
   });
+
+  it('renders diagnostic source and message and opens the exact location', () => {
+    const detail = diagnostic('src/alpha.ts', 'error', 7, 4);
+    sendState(
+      [nodeState('src/alpha.ts', 'error', [], ['diagnostic'])],
+      [],
+      { 'src/alpha.ts': [detail] }
+    );
+
+    requiredFileCard('src/alpha.ts').click();
+    const field = requiredElement<HTMLElement>('diagnostic-field');
+    const entries = requiredElement<HTMLUListElement>('node-diagnostics');
+    expect(field.hidden).toBe(false);
+    expect(entries.textContent).toContain('tsc · error');
+    expect(entries.textContent).toContain("Type 'string' is not assignable to type 'number'.");
+    expect(entries.textContent).toContain('line 8, column 5');
+
+    requiredElement<HTMLButtonElement>('node-diagnostics')
+      .querySelector<HTMLButtonElement>('.diagnostic-entry')
+      ?.click();
+    expect(postedMessages).toContainEqual({
+      type: 'openDiagnostic',
+      fileId: 'src/alpha.ts',
+      line: 7,
+      character: 4
+    });
+  });
+
+  it('shows a warning diagnostic without applying the error state class', () => {
+    group('src').querySelector<HTMLButtonElement>('.folder-header')?.click();
+    sendState(
+      [nodeState('src/alpha.ts', 'idle')],
+      [],
+      { 'src/alpha.ts': [diagnostic('src/alpha.ts', 'warning', 10, 1)] }
+    );
+
+    const card = requiredFileCard('src/alpha.ts');
+    card.click();
+    expect(card.classList.contains('node-state-idle')).toBe(true);
+    expect(card.classList.contains('node-state-error')).toBe(false);
+    expect(requiredElement('node-diagnostics').textContent).toContain('tsc · warning');
+  });
 });
 
 function createGraph(): WebviewGraph {
@@ -286,11 +330,35 @@ function agent(id: string, badge: string): AgentSnapshot {
   };
 }
 
+function diagnostic(
+  fileId: string,
+  severity: NodeDiagnostic['severity'],
+  line: number,
+  character: number
+): NodeDiagnostic {
+  return {
+    id: `${fileId}:${line}:${character}:${severity}`,
+    fileId,
+    source: 'tsc',
+    message: severity === 'error'
+      ? "Type 'string' is not assignable to type 'number'."
+      : 'Unused local variable.',
+    severity,
+    range: {
+      startLine: line,
+      startCharacter: character,
+      endLine: line,
+      endCharacter: character + 3
+    }
+  };
+}
+
 function sendState(
   nodes: GraphNode[],
-  agents: AgentSnapshot[] = []
+  agents: AgentSnapshot[] = [],
+  diagnostics: NodeDiagnostics = {}
 ): void {
-  const update: NodeStateUpdate = { nodes, agents };
+  const update: NodeStateUpdate = { nodes, agents, diagnostics };
   sendMessage({ type: 'stateUpdate', update });
 }
 
@@ -363,6 +431,9 @@ function webviewShell(): string {
     <p id="node-state"></p>
     <p id="node-agents"></p>
     <p id="node-errors"></p>
+    <div id="diagnostic-field" hidden>
+      <ul id="node-diagnostics"></ul>
+    </div>
     <div id="node-conflict"></div>
     <p id="auto-annotation"></p>
     <textarea id="manual-annotation"></textarea>
