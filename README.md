@@ -1,20 +1,24 @@
+[English](README.md) (current) | [繁體中文](README.zh-TW.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [Español](README.es.md)
+
 # CodeFold
 
-CodeFold 是給人類監工使用的 VS Code 2D 節點畫布。它把 TS/JS/Python
-workspace 摺疊成資料夾群組；編修時局部展開，測試時以光流呈現 coverage，
-並用固定語意顯示狀態：黃色＝編修、紅色＝錯誤、綠色＝通過、灰藍＝未知。
+CodeFold is a VS Code 2D node canvas for human supervisors. It folds a TS/JS/Python
+workspace into folder groups, expands local areas during editing, visualizes coverage
+as light flows during testing, and uses fixed state semantics: yellow = editing,
+red = error, green = passed, and blue-gray = unknown.
 
-目前主架構支援：
+The current core architecture supports:
 
-- 檔案、函式、class method 與 import/call/contains 邊。
-- FileSystemWatcher 與多代理 edit/spawn/done/report events。
-- VS Code Diagnostics、Vitest/Jest/pytest coverage 與 failure stack。
-- `test`、`diagnostic`、`runtime`、`agent` 四種可並存的錯誤來源。
-- 原生 DOM＋SVG 2D 畫布；3D 視圖僅保留為展示模式。
+- Files, functions, class methods, and import/call/contains edges.
+- FileSystemWatcher and multi-agent edit/spawn/done/report events.
+- VS Code Diagnostics, Vitest/Jest/pytest coverage, and failure stacks.
+- Four error sources that can coexist: `test`, `diagnostic`, `runtime`, and `agent`.
+- A native DOM + SVG 2D canvas. The 3D view is retained only as a showcase mode;
+  open it with **CodeFold: Open 3D View** (`codefold.open3d`).
 
-## 從零啟動開發版
+## Start the development version from scratch
 
-需求：VS Code 1.90+、Node.js 18+、npm、Git。
+Requirements: VS Code 1.90+, Node.js 18+, npm, and Git.
 
 ```powershell
 git clone https://github.com/bounce12340/codefold.git
@@ -26,61 +30,76 @@ npm run build
 code .
 ```
 
-在 VS Code 按 `F5`，選 **Run CodeFold Extension**。新的 Extension Development
-Host 開啟後：
+In VS Code, press `F5` and choose **Run CodeFold Extension**. After the new Extension
+Development Host opens:
 
-1. `File → Open Folder…` 開啟要監看的 TS/JS/Python repo。
-2. `Ctrl+Shift+P` 執行 **CodeFold: Open**。
-3. `View → Output`，選 **CodeFold**，記下 `Agent hook endpoint` 與
-   `Agent hook token`。端點只綁 `127.0.0.1`，每次 Extension Host 重啟都要重取。
-4. 點資料夾標題可手動展開；點檔案箭頭展開函式；單擊看側欄，雙擊開檔。
+1. Use `File → Open Folder…` to open the TS/JS/Python repo you want to monitor.
+2. The 2D canvas opens automatically because this repository commits
+   `.vscode/settings.json` with `codefold.openOnStartup` set to `true`. You can still
+   run **CodeFold: Open** manually if you close it or need to reopen it. The shipped
+   setting defaults to `false`, so ordinary installed workspaces do not open it
+   automatically unless the user opts in.
+3. Open `View → Output`, select **CodeFold**, and record the `Agent hook endpoint`
+   and `Agent hook token`. The endpoint binds only to `127.0.0.1`; retrieve both
+   values again whenever the Extension Host restarts.
+4. Click a folder title to expand it manually; click a file arrow to expand its
+   functions; single-click to inspect the sidebar, and double-click to open the file.
 
-也可先用瀏覽器驗收畫布，不啟動 VS Code：
+To open the separate 3D showcase, run **CodeFold: Open 3D View**
+(`codefold.open3d`). It is display-only and is not connected to the state flow used
+by later phases.
+
+You can also validate the canvas in a browser without starting VS Code:
 
 ```powershell
 npm run build
 npm run preview
 ```
 
-開啟 `http://127.0.0.1:4173/tools/preview/`。
+Open `http://127.0.0.1:4173/tools/preview/`.
 
-## 設定
+## Settings
 
-在 Extension Development Host 按 `Ctrl+,`，搜尋 `CodeFold`：
+In the Extension Development Host, press `Ctrl+,` and search for `CodeFold`:
 
-| 設定 | 預設 | 用途 |
+| Setting | Default | Purpose |
 |---|---:|---|
-| `codefold.testCommand.javascript` | 空白 | 空白時依 package.json 嘗試本地 Jest，否則 Vitest；不會安裝套件 |
-| `codefold.testCommand.python` | 空白 | 空白時使用 `python -m coverage run -m pytest` |
-| `codefold.testCoverage.javascript` | `coverage/coverage-final.json` | Istanbul/c8 JSON 路徑 |
-| `codefold.testCoverage.python` | `coverage.json` | coverage.py JSON 路徑 |
-| `codefold.runTestsOnSave` | `false` | 存檔後執行設定的測試；因有副作用所以預設關 |
-| `codefold.ignorePaths` | `[]` | 額外忽略的 workspace-relative glob，例如 `**/generated/**`；修改後重開畫布 |
-| `codefold.flashAnimations` | `true` | 關閉 editing/error 閃爍但保留靜態形狀與狀態色；同時尊重 reduced motion |
+| `codefold.openOnStartup` | `false` | Boolean; automatically open the 2D canvas when a workspace is loaded |
+| `codefold.testCommand.javascript` | empty | When empty, try local Jest according to package.json, then Vitest; never installs packages |
+| `codefold.testCommand.python` | empty | When empty, use `python -m coverage run -m pytest` |
+| `codefold.testCoverage.javascript` | `coverage/coverage-final.json` | Istanbul/c8 JSON path |
+| `codefold.testCoverage.python` | `coverage.json` | coverage.py JSON path |
+| `codefold.runTestsOnSave` | `false` | Run configured tests after saving; disabled by default because commands can have side effects |
+| `codefold.ignorePaths` | `[]` | Additional workspace-relative globs, such as `**/generated/**`; reopen the canvas after changing |
+| `codefold.flashAnimations` | `true` | Disable editing/error flashes while preserving static shapes and state colors; also respects reduced motion |
 
-按畫布右下的 **Run tests** 或執行 **CodeFold: Run Tests**。目標專案必須已自行
-安裝 coverage provider（例如 Vitest coverage/Jest coverage 或 coverage.py），且命令
-要重寫上表指定的 JSON report；CodeFold 不會修改目標專案依賴。
+Click **Run tests** in the lower-right corner of the canvas or run
+**CodeFold: Run Tests**. The target project must already have its own coverage
+provider installed (for example, Vitest coverage, Jest coverage, or coverage.py),
+and its command must rewrite the JSON report specified above. CodeFold does not
+modify the target project's dependencies.
 
-## 連接代理 hooks
+## Connect agent hooks
 
-共用 bridge 是 [`examples/hooks/codefold-hook.mjs`](examples/hooks/codefold-hook.mjs)。
-先在**啟動代理 CLI 的同一個 PowerShell**設定：
+The shared bridge is
+[`examples/hooks/codefold-hook.mjs`](examples/hooks/codefold-hook.mjs). First, set
+the following variables in the **same PowerShell used to start the agent CLI**:
 
 ```powershell
-$env:CODEFOLD_URL = 'http://127.0.0.1:49152/events' # 換成 Output 顯示值
-$env:CODEFOLD_TOKEN = '<Output 顯示的 token>'
+$env:CODEFOLD_URL = 'http://127.0.0.1:49152/events' # Replace with the Output value
+$env:CODEFOLD_TOKEN = '<token shown in Output>'
 $env:CODEFOLD_AGENT_NAME = 'claude-main'
 $env:CODEFOLD_BRIDGE = (Resolve-Path 'C:\path\to\codefold\examples\hooks\codefold-hook.mjs')
 ```
 
-bridge 需要 Node.js 18+，從 stdin 讀 hook JSON；任何端點錯誤會以非零 exit code
-顯示，不會靜默略過。若代理監看另一個 repo，`CODEFOLD_BRIDGE` 仍要指向 CodeFold
-clone 內的 bridge 絕對路徑。
+The bridge requires Node.js 18+ and reads hook JSON from stdin. Endpoint failures
+produce a nonzero exit code instead of being silently ignored. If the agent monitors
+a different repo, `CODEFOLD_BRIDGE` must still point to the absolute path of the
+bridge inside the CodeFold clone.
 
 ### Claude Code
 
-在受監看 repo 的 `.claude/settings.local.json` 合併：
+Merge the following into `.claude/settings.local.json` in the monitored repo:
 
 ```json
 {
@@ -119,14 +138,16 @@ clone 內的 bridge 絕對路徑。
 }
 ```
 
-重啟 Claude Code，用 `/hooks` 確認四組 hook。Claude Code 官方
-[hooks reference](https://code.claude.com/docs/en/hooks) 說明 settings 位置、
-matcher 與 stdin event schema。
+Restart Claude Code and use `/hooks` to confirm all four hook groups. The official
+Claude Code [hooks reference](https://code.claude.com/docs/en/hooks) documents
+settings locations, matchers, the stdin event schema, and `shell` as a supported
+command-hook field whose `"powershell"` value selects PowerShell on Windows.
 
 ### Codex CLI
 
-支援 `/hooks` 的 Codex build 可在受監看 repo 的 `.codex/hooks.json` 使用相同
-lifecycle 結構；Windows 用 `commandWindows` 明確指定 bridge：
+Codex builds that support `/hooks` can use the same lifecycle structure in
+`.codex/hooks.json` in the monitored repo. On Windows, use `commandWindows` to
+specify the bridge explicitly:
 
 ```json
 {
@@ -166,13 +187,13 @@ lifecycle 結構；Windows 用 `commandWindows` 明確指定 bridge：
 }
 ```
 
-重啟 Codex CLI，以 `/hooks` 檢查並信任 repo-local hooks。若使用的 Codex build
-沒有 `/hooks`，仍可使用下節的 localhost endpoint；不要假設未支援的 lifecycle
-欄位會自動上報。
+Restart Codex CLI, then use `/hooks` to inspect and trust the repo-local hooks. If
+your Codex build does not provide `/hooks`, you can still use the localhost endpoint
+in the next section; do not assume unsupported lifecycle fields report automatically.
 
-## 直接測試 edit、report 與多代理生命週期
+## Test edit, report, and multi-agent lifecycle events directly
 
-以下命令可在不啟動代理的情況驗證完整資料流：
+The following commands validate the complete data flow without starting an agent:
 
 ```powershell
 $headers = @{ Authorization = "Bearer $env:CODEFOLD_TOKEN" }
@@ -200,8 +221,9 @@ Send-CodeFoldEvent @{
 }
 ```
 
-`agent_report` 未指定 `level` 時預設為 error。解除同一代理在同一目標的回報，
-傳 `level='info'`；只移除 `agent` source，不會清掉 diagnostic/test/runtime：
+When `agent_report` omits `level`, it defaults to error. To clear the same agent's
+report on the same target, send `level='info'`; this removes only the `agent` source
+and does not clear diagnostic/test/runtime:
 
 ```powershell
 Send-CodeFoldEvent @{
@@ -215,29 +237,42 @@ Send-CodeFoldEvent @{ type='agent_done'; agent_id='worker' }
 Send-CodeFoldEvent @{ type='agent_done'; agent_id='main' }
 ```
 
-預期：階層樹先出現 main → worker，編修節點出現 worker 徽章；report 時節點紅色且
-側欄列出代理與訊息；resolve 後若無其他 error source 則解除紅色；done 後節點徽章
-消失、狀態列活動/編修數歸零。錯誤 token 應得到 HTTP 401，CodeFold Output 留下 log。
+Expected result: the hierarchy first shows main → worker, and the editing node shows
+a worker badge. During the report, the node is red and the sidebar lists the agent
+and message. After resolution, the red state clears if no other error source remains.
+After done, node badges disappear and the status bar's active/editing counts return
+to zero. An invalid token should receive HTTP 401, and CodeFold Output should contain
+a log entry.
 
-## 從零 smoke checklist
+## Smoke checklist from scratch
 
-依序勾選即可重現主架構全流程：
+Follow these items in order to reproduce the complete core-architecture flow:
 
-- [ ] `npm ci`、`npm run typecheck`、`npm run test`、`npm run build` 成功。
-- [ ] F5 開啟 Extension Development Host，執行 **CodeFold: Open**。
-- [ ] 在 Settings 設定目標專案測試命令與 coverage JSON，手動按 **Run tests**。
-- [ ] 依上節送 edit/spawn/report/resolve/done，確認畫布、側欄、徽章及狀態列。
-- [ ] 安裝 Claude Code 或 Codex hooks，讓代理實際編修一個檔案，再重做測試。
+- [ ] `npm ci`, `npm run typecheck`, `npm run test`, and `npm run build` succeed.
+- [ ] Press F5 to open the Extension Development Host; confirm that the development
+      workspace setting opens the 2D canvas automatically (or run
+      **CodeFold: Open** to reopen it manually).
+- [ ] Configure the target project's test command and coverage JSON in Settings,
+      then click **Run tests** manually.
+- [ ] Send edit/spawn/report/resolve/done as described above and verify the canvas,
+      sidebar, badges, and status bar.
+- [ ] Install Claude Code or Codex hooks, let the agent edit a real file, and rerun
+      the tests.
 
-最後一項需要真實 VS Code Extension Host 與對應代理 CLI；瀏覽器 preview 只能驗證
-真實 renderer 的視覺/DOM，不會代替 VS Code Diagnostics、檔案監聽或外部 runner。
+The last item requires a real VS Code Extension Host and the corresponding agent CLI.
+The browser preview validates only the real renderer's visuals and DOM; it does not
+replace VS Code Diagnostics, file watching, or the external runner.
 
-更多 hook 欄位與排錯見 [`docs/agent-hooks.md`](docs/agent-hooks.md)，後續方向見
-[`ROADMAP.md`](ROADMAP.md)。
+For more hook fields and troubleshooting, see
+[`docs/agent-hooks.md`](docs/agent-hooks.md). For future directions, see
+[`ROADMAP.md`](ROADMAP.md).
 
-## 安全與限制
+## Security and limitations
 
-- hook server 僅綁 `127.0.0.1`、隨機 port、每次啟動隨機 token，並依 HTTP 到達順序處理。
-- 所有功能本機執行；沒有雲端服務依賴。
-- 首版只支援 TS/JS/TSX/JSX/Python、單一 repo 與約 2,000 檔案。
-- coverage JSON 沒有真實時間序，光流目前是穩定近似；詳見 ROADMAP。
+- The hook server binds only to `127.0.0.1`, uses a random port and a random token on
+  every start, and processes requests in HTTP arrival order.
+- All features run locally; there is no cloud service dependency.
+- The first version supports only TS/JS/TSX/JSX/Python, a single repo, and about
+  2,000 files.
+- Coverage JSON has no real time order, so the light flow is currently a stable
+  approximation; see ROADMAP for details.

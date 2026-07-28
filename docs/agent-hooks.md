@@ -10,6 +10,7 @@ LAN 介面；每次 extension host 重啟都應重新取得這兩個值。
 $env:CODEFOLD_URL = 'http://127.0.0.1:49152/events'
 $env:CODEFOLD_TOKEN = '<CodeFold output channel 顯示的 token>'
 $env:CODEFOLD_AGENT_NAME = 'claude-main'
+$env:CODEFOLD_BRIDGE = (Resolve-Path 'C:\path\to\codefold\examples\hooks\codefold-hook.mjs')
 ```
 
 共用 bridge 是 `examples/hooks/codefold-hook.mjs`，需要 Node.js 18 以上。它從
@@ -21,8 +22,10 @@ human/unknown 的後備訊號，不會假造函式歸屬。
 
 ## Claude Code
 
-在 `.claude/settings.json` 合併下列 `hooks`。`PreToolUse` 讓黃色 editing 狀態在
-工具執行前開始；規格要求的 `PostToolUse` 會在成功編修後上報結束。
+在受監看 repo 的 `.claude/settings.local.json` 合併下列 `hooks`。
+`CODEFOLD_BRIDGE` 必須指向 CodeFold clone 內 bridge 的絕對路徑，即使受監看的
+是另一個 repo。`PreToolUse` 讓黃色 editing 狀態在工具執行前開始；規格要求的
+`PostToolUse` 會在成功編修後上報結束。
 
 ```json
 {
@@ -31,35 +34,42 @@ human/unknown 的後備訊號，不會假造函式歸屬。
       "matcher": "Write|Edit",
       "hooks": [{
         "type": "command",
-        "command": "node \"${CLAUDE_PROJECT_DIR}/examples/hooks/codefold-hook.mjs\""
+        "command": "node \"$env:CODEFOLD_BRIDGE\"",
+        "shell": "powershell"
       }]
     }],
     "PostToolUse": [{
       "matcher": "Write|Edit",
       "hooks": [{
         "type": "command",
-        "command": "node \"${CLAUDE_PROJECT_DIR}/examples/hooks/codefold-hook.mjs\""
+        "command": "node \"$env:CODEFOLD_BRIDGE\"",
+        "shell": "powershell"
       }]
     }],
     "SubagentStart": [{
       "hooks": [{
         "type": "command",
-        "command": "node \"${CLAUDE_PROJECT_DIR}/examples/hooks/codefold-hook.mjs\""
+        "command": "node \"$env:CODEFOLD_BRIDGE\"",
+        "shell": "powershell"
       }]
     }],
     "SubagentStop": [{
       "hooks": [{
         "type": "command",
-        "command": "node \"${CLAUDE_PROJECT_DIR}/examples/hooks/codefold-hook.mjs\""
+        "command": "node \"$env:CODEFOLD_BRIDGE\"",
+        "shell": "powershell"
       }]
     }]
   }
 }
 ```
 
-Claude Code command hooks 的 JSON 由 stdin 傳入；`Write|Edit` matcher、`tool_input`、
-`SubagentStart` 與 `SubagentStop` 的欄位以
-[Claude Code hooks reference](https://code.claude.com/docs/en/hooks) 為準。
+Claude Code command hooks 的 JSON 由 stdin 傳入。官方
+[Claude Code hooks reference](https://code.claude.com/docs/en/hooks) 明列
+`shell` 是 command hook 的有效選用欄位，`"powershell"` 會在 Windows 選用
+PowerShell；hook subprocess 也會繼承啟動 Claude Code 的環境，因此可讀取
+`$env:CODEFOLD_BRIDGE`。`Write|Edit` matcher、`tool_input`、`SubagentStart`
+與 `SubagentStop` 的欄位也以該 reference 為準。
 
 ## Codex CLI
 
