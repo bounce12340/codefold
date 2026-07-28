@@ -143,6 +143,11 @@ Code 공식 [hooks reference](https://code.claude.com/docs/en/hooks)는 settings
 위치, matcher, stdin event schema를 설명하며, `shell`이 지원되는 command-hook
 필드이고 `"powershell"` 값이 Windows에서 PowerShell을 선택한다고 명시합니다.
 
+> **이 hook 항목에 `args` 배열을 추가하지 마십시오.** `args`를 설정하면 exec
+> form이 shell을 완전히 우회하므로 `shell`은 무시됩니다. 위 예시가 의도적으로
+> shell form을 사용하는 이유가 바로 `"shell": "powershell"`을 적용하기
+> 위해서이며, `args`를 추가하면 아무런 경고 없이 비활성화됩니다.
+
 ### Codex CLI
 
 `/hooks`를 지원하는 Codex build는 모니터링할 repo의 `.codex/hooks.json`에서

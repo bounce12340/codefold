@@ -143,6 +143,11 @@ Claude Code [hooks reference](https://code.claude.com/docs/en/hooks) documents
 settings locations, matchers, the stdin event schema, and `shell` as a supported
 command-hook field whose `"powershell"` value selects PowerShell on Windows.
 
+> **Do not add an `args` array to these hook entries.** `shell` is ignored whenever
+> `args` is set, because exec form bypasses the shell entirely. The entries above
+> deliberately use shell form, which is what makes `"shell": "powershell"` take
+> effect. Adding `args` would silently disable it.
+
 ### Codex CLI
 
 Codex builds that support `/hooks` can use the same lifecycle structure in

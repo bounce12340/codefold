@@ -136,6 +136,10 @@ clone 內的 bridge 絕對路徑。
 matcher、stdin event schema，以及 `shell` 是受支援的 command-hook 欄位；
 其 `"powershell"` 值會在 Windows 選用 PowerShell。
 
+> **不要在這些 hook 項目加上 `args` 陣列。** 只要設定了 `args`，`shell` 就會被
+> 忽略，因為 exec form 完全繞過 shell。上面的範例刻意採用 shell form，這才是
+> `"shell": "powershell"` 生效的原因；加了 `args` 會讓它靜默失效。
+
 ### Codex CLI
 
 支援 `/hooks` 的 Codex build 可在受監看 repo 的 `.codex/hooks.json` 使用相同

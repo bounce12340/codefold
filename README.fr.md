@@ -149,6 +149,12 @@ décrit les emplacements des settings, les matcher, le stdin event schema et con
 que `shell` est un champ command-hook pris en charge, dont la valeur `"powershell"`
 sélectionne PowerShell sous Windows.
 
+> **N'ajoutez pas de tableau `args` à ces entrées de hook.** Dès que `args` est
+> défini, `shell` est ignoré, car la forme exec contourne entièrement le shell. Les
+> exemples ci-dessus utilisent délibérément la forme shell : c'est précisément ce qui
+> rend `"shell": "powershell"` effectif. Ajouter `args` le désactiverait
+> silencieusement.
+
 ### Codex CLI
 
 Les Codex build prenant en charge `/hooks` peuvent employer la même structure

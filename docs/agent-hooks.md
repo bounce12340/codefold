@@ -71,6 +71,10 @@ PowerShell；hook subprocess 也會繼承啟動 Claude Code 的環境，因此�
 `$env:CODEFOLD_BRIDGE`。`Write|Edit` matcher、`tool_input`、`SubagentStart`
 與 `SubagentStop` 的欄位也以該 reference 為準。
 
+> **不要在這些 hook 項目加上 `args` 陣列。** 只要設定了 `args`，`shell` 就會被
+> 忽略，因為 exec form 完全繞過 shell。上面的範例刻意採用 shell form，這才是
+> `"shell": "powershell"` 生效的原因；加了 `args` 會讓它靜默失效。
+
 ## Codex CLI
 
 目前 Codex CLI 也支援同名 lifecycle hooks。在 `.codex/hooks.json` 使用相同結構；

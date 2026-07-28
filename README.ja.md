@@ -145,6 +145,12 @@ settings の場所、matcher、stdin event schema、および `shell` がサポ�
 command-hook フィールドであり、値 `"powershell"` が Windows で PowerShell を
 選択することが記載されています。
 
+> **これらの hook エントリに `args` 配列を追加しないでください。** `args` を設定
+> すると、exec form が shell を完全にバイパスするため `shell` は無視されます。
+> 上記の例が意図的に shell form を用いているのは、それによって
+> `"shell": "powershell"` が有効になるからです。`args` を追加すると、警告なしに
+> 無効化されます。
+
 ### Codex CLI
 
 `/hooks` をサポートする Codex build では、監視対象 repo の

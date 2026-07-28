@@ -136,6 +136,10 @@ exit code 显示，而不会被静默忽略。如果代理监控另一个 repo�
 matcher、stdin event schema，以及 `shell` 是受支持的 command-hook 字段；
 其 `"powershell"` 值会在 Windows 上选择 PowerShell。
 
+> **不要在这些 hook 条目中添加 `args` 数组。** 只要设置了 `args`，`shell` 就会被
+> 忽略，因为 exec form 完全绕过 shell。上面的示例刻意采用 shell form，这才是
+> `"shell": "powershell"` 生效的原因；添加 `args` 会让它静默失效。
+
 ### Codex CLI
 
 支持 `/hooks` 的 Codex build 可以在受监控 repo 的 `.codex/hooks.json` 中使用

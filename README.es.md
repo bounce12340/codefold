@@ -148,6 +148,12 @@ documenta las ubicaciones de settings, los matcher, el stdin event schema y que
 `shell` es un campo command-hook compatible cuyo valor `"powershell"` selecciona
 PowerShell en Windows.
 
+> **No añadas un arreglo `args` a estas entradas de hook.** En cuanto se define
+> `args`, `shell` se ignora, porque la forma exec omite por completo el shell. Los
+> ejemplos anteriores usan deliberadamente la forma shell: eso es justamente lo que
+> hace que `"shell": "powershell"` surta efecto. Añadir `args` lo desactivaría de
+> forma silenciosa.
+
 ### Codex CLI
 
 Las versiones de Codex que admiten `/hooks` pueden utilizar la misma estructura de
