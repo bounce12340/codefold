@@ -108,4 +108,15 @@ describe('workspace scanning', () => {
       'python/app.py'
     ]);
   });
+
+  it('applies additional configured ignore globs', async () => {
+    const result = await scanWorkspaceRoot(fixtureRoot, {
+      ignorePaths: ['python/**', 'src/util.ts']
+    });
+
+    expect(result.nodes.map((node) => node.id)).toEqual([
+      'src/feature.ts',
+      'src/index.ts'
+    ]);
+  });
 });

@@ -123,5 +123,7 @@ Invoke-RestMethod $env:CODEFOLD_URL -Method Post -Headers $headers -ContentType 
 ```
 
 精確到函式時可另帶 `node_id`（例如 `src/a.ts#run`），或帶 1-based `line` /
-`symbol`。`agent_report` 可帶 `message`；只有明確的 `"level": "error"` 會加入
-`agent` error source，資訊型 report 只寫入事件 log。
+`symbol`。`agent_report` 必帶 `message`；省略 `level` 或指定
+`"level": "error"` 會新增/更新該代理在目標上的 active report 並加入 `agent`
+error source。指定 `"level": "info"` 代表該代理確認同一目標已解除，只移除該代理
+的 report；若仍有其他代理 report 或 diagnostic/test/runtime，節點會繼續維持 error。

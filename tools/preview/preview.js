@@ -19,7 +19,11 @@
     'functions',
     'diagnostics',
     'diagnostics-warning',
-    'diagnostics-multi-source'
+    'diagnostics-multi-source',
+    'agent-report',
+    'all-error-sources',
+    'status-bar-summary',
+    'multi-agent-lifecycle'
   ];
   const scenarios = {
     clean: {
@@ -358,6 +362,191 @@
         );
         selectNodeLater('src/services/api.ts');
       }
+    },
+    'agent-report': {
+      label: 'Agent-reported problem',
+      acceptance: 'Phase 5 acceptance 1 — red node with reporter attribution',
+      run: () => {
+        const agents = [
+          agent('codex-reviewer', 'Codex reviewer', null, 'triangle-copper', [])
+        ];
+        const report = agentReport(
+          'src/services/api.ts#acceptHookEvent',
+          'codex-reviewer',
+          'Token rejection path can leak the request body length.'
+        );
+        sendGraph();
+        sendState(
+          [
+            fileUpdate('src/services/api.ts', 'error', [], ['agent']),
+            functionUpdate(
+              'src/services/api.ts#acceptHookEvent',
+              'error',
+              [],
+              ['agent']
+            )
+          ],
+          agents,
+          {},
+          undefined,
+          {
+            agentReports: {
+              'src/services/api.ts': [report],
+              'src/services/api.ts#acceptHookEvent': [report]
+            },
+            summary: statusSummary(1, 0, 2, 0)
+          }
+        );
+        selectNodeLater('src/services/api.ts#acceptHookEvent');
+      }
+    },
+    'all-error-sources': {
+      label: 'All four error sources',
+      acceptance: 'Phase 5 acceptance 2 — test/diagnostic/runtime/agent are distinct',
+      run: () => {
+        const nodeId = 'src/services/api.ts';
+        const diagnosticDetail = diagnostic(
+          nodeId,
+          'error',
+          18,
+          2,
+          "Property 'payload' does not exist on type 'HookEvent'.",
+          'tsc'
+        );
+        const testDetail = testFailure(
+          nodeId,
+          'hook rejects malformed events',
+          'AssertionError: expected 400 to equal 202',
+          'test'
+        );
+        const runtimeDetail = testFailure(
+          nodeId,
+          'hook handles closed sockets',
+          'Error: write after end',
+          'runtime'
+        );
+        const report = agentReport(
+          nodeId,
+          'claude-main',
+          'Malformed event branch can double-send the HTTP response.'
+        );
+        sendGraph();
+        sendState(
+          [
+            fileUpdate(
+              nodeId,
+              'error',
+              [],
+              ['test', 'diagnostic', 'runtime', 'agent']
+            )
+          ],
+          [agent('claude-main', 'Claude main', null, 'diamond-violet', [])],
+          { [nodeId]: [diagnosticDetail] },
+          testRun(
+            'complete',
+            'failed',
+            [nodeId],
+            { [nodeId]: [testDetail, runtimeDetail] },
+            'Multiple error sources remain active.'
+          ),
+          {
+            agentReports: { [nodeId]: [report] },
+            summary: statusSummary(1, 0, 1, 0)
+          }
+        );
+        selectNodeLater(nodeId);
+      }
+    },
+    'status-bar-summary': {
+      label: 'Status bar summary and static flashes',
+      acceptance: 'Phase 5 summary counts and disabled flashing setting',
+      run: () => {
+        const agents = [
+          agent('claude-main', 'Claude main', null, 'diamond-violet', [
+            'src/ui/panel.ts'
+          ]),
+          agent('codex-worker', 'Codex worker', null, 'hexagon-magenta', [
+            'python/worker/main.py'
+          ])
+        ];
+        sendGraph(['tests']);
+        sendState(
+          [
+            fileUpdate('src/ui/panel.ts', 'editing', ['claude-main']),
+            fileUpdate('python/worker/main.py', 'editing', ['codex-worker']),
+            fileUpdate('src/services/api.ts', 'error', [], ['agent']),
+            fileUpdate('tests/integration/harness.test.ts', 'passing'),
+            fileUpdate('tests/unit/state.test.ts', 'passing')
+          ],
+          agents,
+          {},
+          undefined,
+          {
+            summary: statusSummary(2, 2, 1, 2),
+            settings: { flashAnimations: false }
+          }
+        );
+      }
+    },
+    'multi-agent-lifecycle': {
+      label: 'Main agent and two subagents',
+      acceptance: 'Phase 5 acceptance 3 — active hierarchy and completed badge cleanup',
+      run: () => {
+        const step = new URLSearchParams(window.location.search).get('step') === 'done'
+          ? 'done'
+          : 'active';
+        document.documentElement.dataset.previewStep = step;
+        const done = step === 'done';
+        const agents = [
+          {
+            ...agent('claude-main', 'Claude main', null, 'diamond-violet', []),
+            status: done ? 'done' : 'active'
+          },
+          {
+            ...agent(
+              'ui-worker',
+              'UI subagent',
+              'claude-main',
+              'hexagon-magenta',
+              done ? [] : ['src/ui/panel.ts']
+            ),
+            status: done ? 'done' : 'active'
+          },
+          {
+            ...agent(
+              'python-worker',
+              'Python subagent',
+              'claude-main',
+              'triangle-copper',
+              done ? [] : ['python/worker/parser.py']
+            ),
+            status: done ? 'done' : 'active'
+          }
+        ];
+        sendGraph();
+        sendState(
+          [
+            fileUpdate(
+              'src/ui/panel.ts',
+              done ? 'dirty' : 'editing',
+              done ? [] : ['ui-worker']
+            ),
+            fileUpdate(
+              'python/worker/parser.py',
+              done ? 'dirty' : 'editing',
+              done ? [] : ['python-worker']
+            )
+          ],
+          agents,
+          {},
+          undefined,
+          {
+            summary: done
+              ? statusSummary(0, 0, 0, 0)
+              : statusSummary(3, 2, 0, 0)
+          }
+        );
+      }
     }
   };
 
@@ -529,6 +718,7 @@
     const scenario = scenarios[id] || scenarios.clean;
     const resolvedId = scenarios[id] ? id : 'clean';
     document.documentElement.dataset.previewScenario = resolvedId;
+    document.documentElement.dataset.previewStep = '';
     const select = document.getElementById('preview-scenario');
     if (select) {
       select.value = resolvedId;
@@ -628,6 +818,25 @@
         flowEdges: document.querySelectorAll('.test-flow-edge').length,
         passingGroups: document.querySelectorAll('.folder-group.test-run-passing').length,
         failureEntries: document.querySelectorAll('.test-failure-entry').length
+      },
+      phase5: {
+        step: document.documentElement.dataset.previewStep || '',
+        summary: document.getElementById('state-summary')?.textContent || '',
+        errorSourceLabels: Array.from(document.querySelectorAll(
+          '.error-source-chip'
+        )).map((entry) => entry.textContent || ''),
+        agentReports: Array.from(document.querySelectorAll(
+          '.agent-report-entry'
+        )).map((entry) => entry.textContent || ''),
+        flashDisabled: document.body.classList.contains('flash-disabled'),
+        editingAnimation: document.querySelector('.node-state-editing')
+          ? getComputedStyle(document.querySelector('.node-state-editing')).animationName
+          : '',
+        errorAnimation: document.querySelector('.node-state-error')
+          ? getComputedStyle(document.querySelector('.node-state-error')).animationName
+          : '',
+        doneAgents: Array.from(document.querySelectorAll('.agent-status'))
+          .filter((entry) => entry.textContent === 'done').length
       }
     };
   }
@@ -646,14 +855,21 @@
     }, '*');
   }
 
-  function sendState(nodes, agents = [], diagnostics = {}, testRunSnapshot) {
+  function sendState(
+    nodes,
+    agents = [],
+    diagnostics = {},
+    testRunSnapshot,
+    extras = {}
+  ) {
     window.postMessage({
       type: 'stateUpdate',
       update: {
         nodes,
         agents,
         diagnostics,
-        ...(testRunSnapshot ? { testRun: testRunSnapshot } : {})
+        ...(testRunSnapshot ? { testRun: testRunSnapshot } : {}),
+        ...extras
       }
     }, '*');
   }
@@ -883,6 +1099,22 @@
       line,
       character
     };
+  }
+
+  function agentReport(nodeId, agentId, message) {
+    return {
+      id: `${nodeId}:${agentId}`,
+      agentId,
+      agentName: agentId === 'claude-main' ? 'Claude main' : 'Codex reviewer',
+      message,
+      fileId: nodeId.split('#')[0],
+      nodeId,
+      createdAt: '2026-07-28T00:00:00.000Z'
+    };
+  }
+
+  function statusSummary(activeAgents, editingNodes, errorNodes, passingNodes) {
+    return { activeAgents, editingNodes, errorNodes, passingNodes };
   }
 
   function agent(id, name, parentId, badge, workAreas) {

@@ -15,12 +15,21 @@ Phase 1 函式節點與 call 邊。Phase 3 可用 `diagnostics` 核對檔案、�
 Phase 4 可用 `verifying` 核對函式與 call 邊的依序光流，
 `passing` 核對全綠後群組收合且座標不變，`test-failure` 核對失敗節點
 紅閃與側欄 stack trace，`test-mixed` 核對同畫面的通過綠與失敗紅。
+Phase 5 可用 `agent-report` 核對代理回報的紅色節點與歸屬，
+`all-error-sources` 核對 test / diagnostic / runtime / agent 四種來源，
+`status-bar-summary` 核對活動代理、編修、錯誤與通過計數，
+`multi-agent-lifecycle` 核對主代理與 subagent 的階層、徽章及完成後清除。
 例如直接開啟：
 
 - `http://127.0.0.1:4173/tools/preview/?scenario=verifying`
 - `http://127.0.0.1:4173/tools/preview/?scenario=passing`
 - `http://127.0.0.1:4173/tools/preview/?scenario=test-failure`
 - `http://127.0.0.1:4173/tools/preview/?scenario=test-mixed`
+- `http://127.0.0.1:4173/tools/preview/?scenario=agent-report`
+- `http://127.0.0.1:4173/tools/preview/?scenario=all-error-sources`
+- `http://127.0.0.1:4173/tools/preview/?scenario=status-bar-summary`
+- `http://127.0.0.1:4173/tools/preview/?scenario=multi-agent-lifecycle&step=active`
+- `http://127.0.0.1:4173/tools/preview/?scenario=multi-agent-lifecycle&step=done`
 
 錯誤 token（Phase 2 驗收 6）沒有畫布呈現，仍由
 `tests/hookServer.test.ts` 驗證。

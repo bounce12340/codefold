@@ -4,10 +4,12 @@ import type {
   GraphEdge,
   GraphNode,
   NodeStateUpdate,
+  StatusSummary,
   WebviewGraph,
   WorkspaceLayout
 } from './scanner/model';
 import { AgentRegistry } from './agents/agentRegistry';
+import { AgentReportTracker } from './agents/agentReportTracker';
 import type { AgentHookEvent } from './agents/events';
 import { AgentHookServer } from './agents/hookServer';
 import {
@@ -22,6 +24,10 @@ import {
 import { writeWorkspaceNote } from './scanner/notes';
 import { scanWorkspaceRoot } from './scanner/scanWorkspace';
 import { NodeStateStore } from './state/nodeStateMachine';
+import {
+  computeStatusSummary,
+  formatStatusSummary
+} from './state/statusSummary';
 import { findChangedLineRange } from './state/textChanges';
 import { parseCoverageJson, type CoverageRecord } from './testing/coverage';
 import { parseTestFailures, type ParsedFailure } from './testing/failures';
@@ -43,6 +49,21 @@ type ViewMode = keyof typeof VIEW_TYPES;
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const output = vscode.window.createOutputChannel('CodeFold');
   const agentRegistry = new AgentRegistry();
+  const statusItem = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Left,
+    100
+  );
+  statusItem.name = 'CodeFold status';
+  statusItem.command = 'codefold.open';
+  statusItem.show();
+  const updateStatusItem = (summary: StatusSummary): void => {
+    statusItem.text = `$(hubot) ${summary.activeAgents}  `
+      + `$(edit) ${summary.editingNodes}  `
+      + `$(error) ${summary.errorNodes}  `
+      + `$(pass) ${summary.passingNodes}`;
+    statusItem.tooltip = `CodeFold — ${formatStatusSummary(summary)}`;
+  };
+  updateStatusItem(computeStatusSummary([], agentRegistry.snapshots()));
   let phase2Runtime: Phase2Runtime | undefined;
   const hookServer = new AgentHookServer({
     log: (message) => output.appendLine(`[agent hook] ${message}`),
@@ -52,6 +73,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       agentRegistry.apply(event, eventWorkArea(event));
+      updateStatusItem(computeStatusSummary([], agentRegistry.snapshots()));
       output.appendLine(
         `[agent hook] Accepted ${event.type} for ${event.agent_id}; `
         + 'no 2D canvas is currently open.'
@@ -74,6 +96,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     output,
+    statusItem,
     { dispose: () => void hookServer.stop().catch((error) => {
       output.appendLine(`Could not stop the CodeFold agent hook endpoint: ${formatError(error)}`);
     }) },
@@ -85,7 +108,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       agentRegistry,
       (runtime) => {
         phase2Runtime = runtime;
-      }
+      },
+      updateStatusItem
     ),
     registerGraphCommand(context, output, 'codefold.open3d', '3d'),
     vscode.commands.registerCommand('codefold.runTests', async () => {
@@ -116,7 +140,8 @@ function registerGraphCommand(
   command: string,
   mode: ViewMode,
   agentRegistry?: AgentRegistry,
-  setPhase2Runtime?: (runtime: Phase2Runtime | undefined) => void
+  setPhase2Runtime?: (runtime: Phase2Runtime | undefined) => void,
+  onSummary?: (summary: StatusSummary) => void
 ): vscode.Disposable {
   let currentPanel: vscode.WebviewPanel | undefined;
   let receiveSubscription: vscode.Disposable | undefined;
@@ -131,6 +156,7 @@ function registerGraphCommand(
           localPhase2Runtime?.dispose();
           localPhase2Runtime = undefined;
           setPhase2Runtime?.(undefined);
+          onSummary?.(computeStatusSummary([], agentRegistry?.snapshots() ?? []));
           currentPanel = undefined;
         },
         undefined,
@@ -363,7 +389,8 @@ function registerGraphCommand(
           fileContents: result.fileContents,
           agentRegistry,
           output,
-          workspaceRoot: result.layoutRoot
+          workspaceRoot: result.layoutRoot,
+          onSummary
         });
         setPhase2Runtime?.(localPhase2Runtime);
       }
@@ -438,6 +465,9 @@ async function scanWorkspace(
   let layout = emptyWorkspaceLayout();
   let layoutRoot: string | undefined;
   const multipleRoots = folders.length > 1;
+  const ignorePaths = vscode.workspace
+    .getConfiguration('codefold')
+    .get<string[]>('ignorePaths', []);
 
   for (const folder of folders) {
     if (folder.uri.scheme !== 'file') {
@@ -458,6 +488,7 @@ async function scanWorkspace(
     const result = await scanWorkspaceRoot(folder.uri.fsPath, {
       maxFiles: MAX_FILES + 1,
       includeFunctions,
+      ignorePaths,
       wasmDirectory: vscode.Uri.joinPath(
         context.extensionUri,
         'dist',
@@ -609,6 +640,7 @@ interface Phase2RuntimeOptions {
   agentRegistry: AgentRegistry;
   output: vscode.OutputChannel;
   workspaceRoot: string | undefined;
+  onSummary?: (summary: StatusSummary) => void;
 }
 
 function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
@@ -620,7 +652,8 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
     fileContents,
     agentRegistry,
     output,
-    workspaceRoot
+    workspaceRoot,
+    onSummary
   } = options;
   const allNodes = [...graph.nodes, ...functionNodes];
   const nodeById = new Map(allNodes.map((node) => [node.id, node]));
@@ -645,11 +678,21 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
     if (disposed) {
       return;
     }
+    const agents = agentRegistry.snapshots();
+    const summary = computeStatusSummary(allNodes, agents);
+    onSummary?.(summary);
     const update: NodeStateUpdate = {
       nodes,
-      agents: agentRegistry.snapshots(),
+      agents,
       diagnostics: diagnosticTracker?.snapshot() ?? {},
-      testRun: testRunTracker?.snapshot()
+      testRun: testRunTracker?.snapshot(),
+      agentReports: agentReportTracker?.snapshot() ?? {},
+      summary,
+      settings: {
+        flashAnimations: vscode.workspace
+          .getConfiguration('codefold')
+          .get<boolean>('flashAnimations', true)
+      }
     };
     try {
       await panel.webview.postMessage({ type: 'stateUpdate', update });
@@ -661,6 +704,7 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
     void postState(nodes);
   });
   const diagnosticTracker = new DiagnosticTracker(allNodes, stateStore);
+  const agentReportTracker = new AgentReportTracker(stateStore);
   const testRunTracker = workspaceRoot
     ? new TestRunTracker(allNodes, stateStore, workspaceRoot)
     : undefined;
@@ -822,6 +866,16 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
   const documentSave = vscode.workspace.onDidSaveTextDocument((document) => {
     if (fileIdByFsPath.has(normalizeFsPath(document.uri.fsPath))) {
       scheduleAutomaticTests();
+    }
+  });
+  const configurationChange = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration('codefold.flashAnimations')) {
+      void postState([]);
+    }
+    if (event.affectsConfiguration('codefold.ignorePaths')) {
+      output.appendLine(
+        'CodeFold ignore paths changed; reopen the 2D canvas to rescan the workspace.'
+      );
     }
   });
 
@@ -1014,8 +1068,8 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
         stateStore.endAgentEdit(nodeIds, event.agent_id);
       } else if (event.type === 'agent_done') {
         stateStore.finishAgent(event.agent_id);
-      } else if (event.type === 'agent_report' && event.level === 'error') {
-        stateStore.addError(nodeIds, 'agent');
+      } else if (event.type === 'agent_report') {
+        agentReportTracker.apply(event, nodeIds, agentRegistry.snapshots());
       }
 
       if (
@@ -1050,6 +1104,7 @@ function createPhase2Runtime(options: Phase2RuntimeOptions): Phase2Runtime {
       documentChange.dispose();
       documentSave.dispose();
       diagnosticChange.dispose();
+      configurationChange.dispose();
       watcher.dispose();
     }
   };
@@ -1518,15 +1573,19 @@ function get2dWebviewHtml(
     .function-range {
       margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 10px;
     }
-    #status, #warning, #layout-warning, #tooltip, #reset-view, #run-tests {
+    #status, #state-summary, #warning, #layout-warning, #tooltip, #reset-view, #run-tests {
       position: fixed; z-index: 20; border-radius: 5px;
       border: 1px solid var(--vscode-widget-border, transparent);
     }
-    #status, #warning, #layout-warning {
+    #status, #state-summary, #warning, #layout-warning {
       left: 10px; padding: 6px 9px; pointer-events: none;
       background: color-mix(in srgb, var(--vscode-editor-background) 90%, transparent);
     }
     #status { top: 10px; }
+    #state-summary {
+      bottom: 10px; font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
     #warning {
       top: 48px; max-width: min(600px, calc(100vw - var(--sidebar-width) - 24px));
       color: var(--vscode-editorWarning-foreground);
@@ -1628,6 +1687,39 @@ function get2dWebviewHtml(
       font: 10px/1.35 var(--vscode-editor-font-family, monospace);
       white-space: pre-wrap; overflow-wrap: anywhere;
     }
+    #node-error-source-list, #node-agent-reports {
+      display: grid; gap: 6px; margin: 0; padding: 0; list-style: none;
+    }
+    .error-source-chip {
+      display: flex; align-items: center; gap: 7px; padding: 5px 7px;
+      border: 1px solid var(--vscode-widget-border, var(--neutral));
+      border-left: 3px solid var(--state-error); border-radius: 4px;
+      font-size: 11px;
+    }
+    .error-source-icon {
+      display: inline-grid; place-items: center; width: 18px; height: 18px;
+      border: 1px solid currentColor; color: var(--vscode-foreground);
+      font-weight: 800; line-height: 1;
+    }
+    .error-source-test .error-source-icon { border-radius: 50%; }
+    .error-source-diagnostic .error-source-icon { transform: rotate(45deg); }
+    .error-source-diagnostic .error-source-icon > span { transform: rotate(-45deg); }
+    .error-source-runtime .error-source-icon { border-radius: 2px 8px 2px 8px; }
+    .error-source-agent .error-source-icon { clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+    .agent-report-entry {
+      display: grid; gap: 3px; padding: 7px 8px;
+      border: 1px solid var(--vscode-widget-border, var(--neutral));
+      border-left: 3px solid var(--state-error); border-radius: 4px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    }
+    .agent-report-heading { font-size: 11px; font-weight: 750; }
+    .agent-report-message { font-size: 12px; line-height: 1.35; }
+    body.flash-disabled .file-card.node-state-editing,
+    body.flash-disabled .function-card.node-state-editing,
+    body.flash-disabled .file-card.node-state-error,
+    body.flash-disabled .function-card.node-state-error {
+      animation: none !important;
+    }
     #agent-panel {
       margin-top: 18px; padding-top: 14px;
       border-top: 1px solid var(--vscode-sideBar-border, var(--vscode-widget-border));
@@ -1700,6 +1792,7 @@ function get2dWebviewHtml(
     </div>
   </main>
   <div id="status" role="status">Loading workspace graph…</div>
+  <div id="state-summary" role="status">0 agents active · 0 editing · 0 errors · 0 passing</div>
   <div id="warning" role="alert" hidden></div>
   <div id="layout-warning" role="alert" hidden></div>
   <div id="tooltip" role="tooltip" hidden></div>
@@ -1715,6 +1808,10 @@ function get2dWebviewHtml(
       <div class="field"><span class="field-label">State</span><p id="node-state" class="field-value"></p></div>
       <div class="field"><span class="field-label">Editing agents</span><p id="node-agents" class="field-value"></p></div>
       <div class="field"><span class="field-label">Error sources</span><p id="node-errors" class="field-value"></p></div>
+      <div id="error-source-field" class="field" hidden>
+        <span class="field-label">Error source details</span>
+        <ul id="node-error-source-list"></ul>
+      </div>
       <div id="diagnostic-field" class="field" hidden>
         <span class="field-label">Diagnostics</span>
         <ul id="node-diagnostics"></ul>
@@ -1722,6 +1819,10 @@ function get2dWebviewHtml(
       <div id="test-failure-field" class="field" hidden>
         <span class="field-label">Test failures</span>
         <ul id="node-test-failures"></ul>
+      </div>
+      <div id="agent-report-field" class="field" hidden>
+        <span class="field-label">Agent reports</span>
+        <ul id="node-agent-reports"></ul>
       </div>
       <div id="node-conflict" class="field" hidden>Potential conflict: multiple agents are editing this node.</div>
       <div class="field">

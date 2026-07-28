@@ -33,12 +33,17 @@ try {
     ['functions', 'dark'],
     ['diagnostics', 'dark'],
     ['diagnostics-warning', 'dark'],
-    ['diagnostics-multi-source', 'dark']
+    ['diagnostics-multi-source', 'dark'],
+    ['agent-report', 'dark'],
+    ['all-error-sources', 'dark'],
+    ['status-bar-summary', 'dark'],
+    ['multi-agent-lifecycle', 'dark', 'active'],
+    ['multi-agent-lifecycle', 'dark', 'done']
   ];
   const results = [];
   let baselinePositions;
-  for (const [scenarioId, theme] of scenarios) {
-    const resultId = `${scenarioId}-${theme}`;
+  for (const [scenarioId, theme, step] of scenarios) {
+    const resultId = `${scenarioId}-${theme}${step ? `-${step}` : ''}`;
     const profile = path.join(browserProfile, resultId);
     await mkdir(profile, { recursive: true });
     const browserResult = await runBrowser(
@@ -59,6 +64,7 @@ try {
         '--virtual-time-budget=1000',
         `--user-data-dir=${profile}`,
         `${preview.url}?scenario=${scenarioId}&theme=${theme}`
+          + (step ? `&step=${step}` : '')
       ]
     );
     if (browserResult.exitCode !== 0) {
@@ -96,6 +102,10 @@ try {
       || scenarioId === 'verifying'
       || scenarioId === 'passing'
       || scenarioId.startsWith('test-')
+      || scenarioId === 'agent-report'
+      || scenarioId === 'all-error-sources'
+      || scenarioId === 'status-bar-summary'
+      || scenarioId === 'multi-agent-lifecycle'
     ) {
       console.log(`${resultId}-metrics: ${JSON.stringify(summary.metrics)}`);
     }
@@ -233,6 +243,11 @@ function summarizeDom(html) {
     diagnosticText: textById(html, 'node-diagnostics'),
     testFailureEntries: elementsWithClass(html, 'test-failure-entry').length,
     testFailureText: textById(html, 'node-test-failures'),
+    agentReportEntries: elementsWithClass(html, 'agent-report-entry').length,
+    agentReportText: textById(html, 'node-agent-reports'),
+    errorSourceEntries: elementsWithClass(html, 'error-source-chip').length,
+    errorSourceText: textById(html, 'node-error-source-list'),
+    statusSummaryText: textById(html, 'state-summary'),
     selectedState: textById(html, 'node-state'),
     selectedErrorSources: textById(html, 'node-errors'),
     editing: countState('editing'),
@@ -480,6 +495,70 @@ function assertScenario(summary) {
         'Multiple errorSources were not preserved'
       );
       assert(summary.selectedState === 'error', 'Multi-source node did not resolve to error');
+      break;
+    case 'agent-report':
+      assert(
+        summary.error === 1 && summary.functionError === 1,
+        'agent report did not mark its file and function red'
+      );
+      assert(summary.agentReportEntries === 1, 'agent report detail is missing');
+      assert(
+        summary.agentReportText.includes('Codex reviewer (codex-reviewer)')
+        && summary.agentReportText.includes('request body length'),
+        'agent report attribution or message is missing'
+      );
+      assert(
+        summary.errorSourceText.includes('agent — Agent report'),
+        'agent source label is missing'
+      );
+      break;
+    case 'all-error-sources':
+      assert(summary.errorSourceEntries === 4, 'not all four source chips are visible');
+      for (const source of ['test', 'diagnostic', 'runtime', 'agent']) {
+        assert(
+          summary.errorSourceText.includes(source),
+          `${source} source is not distinguished in the sidebar`
+        );
+      }
+      assert(summary.diagnosticEntries === 1, 'diagnostic detail is missing');
+      assert(summary.testFailureEntries === 2, 'test/runtime details are incomplete');
+      assert(summary.agentReportEntries === 1, 'agent detail is missing');
+      break;
+    case 'status-bar-summary':
+      assert(
+        summary.statusSummaryText
+        === '2 agents active · 2 editing · 1 errors · 2 passing',
+        'status summary counts are incorrect'
+      );
+      assert(summary.metrics.phase5.flashDisabled, 'flash setting was not applied');
+      assert(
+        summary.metrics.phase5.editingAnimation === 'none'
+        && summary.metrics.phase5.errorAnimation === 'none',
+        'editing/error animation still runs while flashing is disabled'
+      );
+      break;
+    case 'multi-agent-lifecycle':
+      assert(
+        summary.rootAgents === 1 && summary.nestedAgents === 2,
+        'main agent and two subagents are not nested'
+      );
+      if (summary.metrics.phase5.step === 'done') {
+        assert(summary.badges === 0, 'agent_done left node badges behind');
+        assert(summary.metrics.phase5.doneAgents === 3, 'done statuses are incomplete');
+        assert(
+          summary.statusSummaryText
+          === '0 agents active · 0 editing · 0 errors · 0 passing',
+          'completed lifecycle summary is incorrect'
+        );
+      } else {
+        assert(summary.badges === 2, 'parallel subagent badges are missing');
+        assert(summary.expandedGroups >= 2, 'parallel subagent groups did not expand');
+        assert(
+          summary.statusSummaryText
+          === '3 agents active · 2 editing · 0 errors · 0 passing',
+          'active lifecycle summary is incorrect'
+        );
+      }
       break;
     default:
       throw new Error(`Unexpected preview scenario: ${summary.scenario}`);

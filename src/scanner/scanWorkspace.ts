@@ -22,6 +22,7 @@ export interface ScanOptions {
   onError?: (message: string) => void;
   includeFunctions?: boolean;
   wasmDirectory?: string;
+  ignorePaths?: readonly string[];
 }
 
 export async function scanWorkspaceRoot(
@@ -30,13 +31,16 @@ export async function scanWorkspaceRoot(
 ): Promise<ScanResult> {
   const maxFiles = options.maxFiles ?? 2_000;
   const onError = options.onError ?? ((message: string) => console.error(message));
+  const ignorePaths = (options.ignorePaths ?? [])
+    .map((pattern) => pattern.trim().replaceAll('\\', '/'))
+    .filter(Boolean);
   const matches = await globby(SOURCE_GLOBS, {
     cwd: rootPath,
     gitignore: true,
     onlyFiles: true,
     followSymbolicLinks: false,
     dot: false,
-    ignore: ['**/node_modules/**']
+    ignore: ['**/node_modules/**', ...ignorePaths]
   });
   const relativePaths = matches
     .map((filePath) => filePath.replaceAll('\\', '/'))

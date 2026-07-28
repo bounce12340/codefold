@@ -63,6 +63,19 @@
           "type": "string",
           "default": "coverage.json",
           "description": "Workspace-relative coverage.py JSON report produced by the Python test command."
+        },
+        "codefold.ignorePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional workspace-relative glob patterns excluded from CodeFold scanning, for example **/generated/**."
+        },
+        "codefold.flashAnimations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Animate editing and error flashes. Turn off for static state indicators; prefers-reduced-motion is always respected."
         }
       }
     }

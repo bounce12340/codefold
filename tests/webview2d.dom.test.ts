@@ -3,14 +3,17 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentRegistry } from '../src/agents/agentRegistry';
 import type {
+  AgentReportDetail,
   AgentSnapshot,
   GraphNode,
   NodeDiagnostic,
   NodeDiagnostics,
   NodeState,
   NodeStateUpdate,
+  StatusSummary,
   TestFailureDetail,
   TestRunSnapshot,
+  WebviewSettings,
   WebviewGraph
 } from '../src/scanner/model';
 import { resolveNodeState } from '../src/state/nodeStateMachine';
@@ -326,6 +329,84 @@ describe('Phase 2 webview DOM rendering', () => {
       character: 3
     });
   });
+
+  it('renders agent report attribution and the four distinct source labels', () => {
+    const reports = {
+      'src/alpha.ts': [agentReport('src/alpha.ts', 'reviewer', 'Unsafe fallback.')]
+    };
+    sendState(
+      [nodeState(
+        'src/alpha.ts',
+        'error',
+        [],
+        ['test', 'diagnostic', 'runtime', 'agent']
+      )],
+      [agent('reviewer', 'triangle-copper')],
+      {},
+      undefined,
+      { agentReports: reports }
+    );
+    requiredFileCard('src/alpha.ts').click();
+
+    expect(requiredElement('node-error-source-list').textContent)
+      .toContain('test — Test failure');
+    expect(requiredElement('node-error-source-list').textContent)
+      .toContain('diagnostic — Static diagnostic');
+    expect(requiredElement('node-error-source-list').textContent)
+      .toContain('runtime — Runtime exception');
+    expect(requiredElement('node-error-source-list').textContent)
+      .toContain('agent — Agent report');
+    expect(requiredElement('node-agent-reports').textContent)
+      .toContain('reviewer (reviewer)');
+    expect(requiredElement('node-agent-reports').textContent)
+      .toContain('Unsafe fallback.');
+  });
+
+  it('updates the status summary and disables flashing through settings', () => {
+    const summary: StatusSummary = {
+      activeAgents: 2,
+      editingNodes: 3,
+      errorNodes: 1,
+      passingNodes: 4
+    };
+    sendState(
+      [nodeState('src/alpha.ts', 'editing')],
+      [],
+      {},
+      undefined,
+      {
+        summary,
+        settings: { flashAnimations: false }
+      }
+    );
+
+    expect(requiredElement('state-summary').textContent)
+      .toBe('2 agents active · 3 editing · 1 errors · 4 passing');
+    expect(document.body.classList.contains('flash-disabled')).toBe(true);
+
+    sendState([], [], {}, undefined, {
+      settings: { flashAnimations: true }
+    });
+    expect(document.body.classList.contains('flash-disabled')).toBe(false);
+  });
+
+  it('removes the node badge when agent_done state is received', () => {
+    sendState(
+      [nodeState('src/alpha.ts', 'editing', ['worker'])],
+      [agent('worker', 'hexagon-magenta')]
+    );
+    expect(requiredFileCard('src/alpha.ts').querySelectorAll('.agent-badge'))
+      .toHaveLength(1);
+
+    sendState(
+      [nodeState('src/alpha.ts', 'dirty')],
+      [{ ...agent('worker', 'hexagon-magenta'), status: 'done', workAreas: [] }]
+    );
+
+    expect(requiredFileCard('src/alpha.ts').querySelectorAll('.agent-badge'))
+      .toHaveLength(0);
+    expect(requiredElement('agent-tree').textContent).toContain('done');
+  });
 });
 
 function createGraph(): WebviewGraph {
@@ -424,13 +505,19 @@ function sendState(
   nodes: GraphNode[],
   agents: AgentSnapshot[] = [],
   diagnostics: NodeDiagnostics = {},
-  testRunSnapshot?: TestRunSnapshot
+  testRunSnapshot?: TestRunSnapshot,
+  extras: {
+    agentReports?: Record<string, AgentReportDetail[]>;
+    summary?: StatusSummary;
+    settings?: WebviewSettings;
+  } = {}
 ): void {
   const update: NodeStateUpdate = {
     nodes,
     agents,
     diagnostics,
-    ...(testRunSnapshot ? { testRun: testRunSnapshot } : {})
+    ...(testRunSnapshot ? { testRun: testRunSnapshot } : {}),
+    ...extras
   };
   sendMessage({ type: 'stateUpdate', update });
 }
@@ -459,6 +546,22 @@ function testFailure(): TestFailureDetail {
     fileId: 'src/alpha.ts',
     line: 12,
     character: 3
+  };
+}
+
+function agentReport(
+  nodeId: string,
+  agentId: string,
+  message: string
+): AgentReportDetail {
+  return {
+    id: `${nodeId}:${agentId}`,
+    agentId,
+    agentName: agentId,
+    message,
+    fileId: nodeId.split('#')[0],
+    nodeId,
+    createdAt: '2026-07-28T00:00:00.000Z'
   };
 }
 
@@ -519,6 +622,7 @@ function webviewShell(): string {
       </div>
     </main>
     <div id="status"></div>
+    <div id="state-summary"></div>
     <div id="warning"></div>
     <div id="layout-warning"></div>
     <div id="tooltip"></div>
@@ -532,11 +636,17 @@ function webviewShell(): string {
     <p id="node-state"></p>
     <p id="node-agents"></p>
     <p id="node-errors"></p>
+    <div id="error-source-field" hidden>
+      <ul id="node-error-source-list"></ul>
+    </div>
     <div id="diagnostic-field" hidden>
       <ul id="node-diagnostics"></ul>
     </div>
     <div id="test-failure-field" hidden>
       <ul id="node-test-failures"></ul>
+    </div>
+    <div id="agent-report-field" hidden>
+      <ul id="node-agent-reports"></ul>
     </div>
     <div id="node-conflict"></div>
     <p id="auto-annotation"></p>

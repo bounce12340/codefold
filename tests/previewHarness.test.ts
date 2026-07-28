@@ -36,4 +36,16 @@ describe('browser preview harness generation', () => {
     expect(previewHtml).toContain('id="canvas"');
     expect(previewHtml).toContain('id="agent-tree"');
   });
+
+  it('contains a product CSS override that stops flashes when disabled', async () => {
+    const extensionSource = await readFile(
+      path.join(root, 'src', 'extension.ts'),
+      'utf8'
+    );
+    const template = extract2dTemplate(extensionSource);
+
+    expect(template).toMatch(
+      /body\.flash-disabled[\s\S]+?node-state-error[\s\S]+?animation:\s*none\s*!important;/
+    );
+  });
 });

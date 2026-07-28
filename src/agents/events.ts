@@ -58,6 +58,14 @@ export function parseAgentHookEvent(value: unknown): AgentHookEvent {
   if (value.type === 'agent_report' && !nonEmptyString(value.message)) {
     throw new Error('agent_report requires a non-empty message.');
   }
+  if (
+    value.type === 'agent_report'
+    && value.level !== undefined
+    && value.level !== 'info'
+    && value.level !== 'error'
+  ) {
+    throw new Error('agent_report level must be info or error when provided.');
+  }
   if ('line' in value && value.line !== undefined &&
     (typeof value.line !== 'number' || !Number.isInteger(value.line) || value.line < 1)) {
     throw new Error('line must be a positive 1-based integer.');

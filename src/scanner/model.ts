@@ -61,6 +61,18 @@ export interface NodeDiagnostic {
 
 export type NodeDiagnostics = Record<string, NodeDiagnostic[]>;
 
+export interface AgentReportDetail {
+  id: string;
+  agentId: string;
+  agentName: string;
+  message: string;
+  fileId: string;
+  nodeId: string;
+  createdAt: string;
+}
+
+export type NodeAgentReports = Record<string, AgentReportDetail[]>;
+
 export interface TestFailureDetail {
   id: string;
   testName: string;
@@ -82,11 +94,25 @@ export interface TestRunSnapshot {
   message: string | null;
 }
 
+export interface StatusSummary {
+  activeAgents: number;
+  editingNodes: number;
+  errorNodes: number;
+  passingNodes: number;
+}
+
+export interface WebviewSettings {
+  flashAnimations: boolean;
+}
+
 export interface NodeStateUpdate {
   nodes: GraphNode[];
   agents: AgentSnapshot[];
   diagnostics?: NodeDiagnostics;
   testRun?: TestRunSnapshot;
+  agentReports?: NodeAgentReports;
+  summary?: StatusSummary;
+  settings?: WebviewSettings;
 }
 
 export interface FileGraph {

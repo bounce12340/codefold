@@ -14,6 +14,7 @@ import {
   type FolderGroup
 } from '../graph/folders';
 import type {
+  AgentReportDetail,
   AgentSnapshot,
   FunctionGraphPayload,
   GraphEdge,
@@ -22,10 +23,13 @@ import type {
   LayoutPoint,
   NodeDiagnostic,
   NodeDiagnostics,
+  NodeAgentReports,
   NodeState,
   NodeStateUpdate,
+  StatusSummary,
   TestFailureDetail,
   TestRunSnapshot,
+  WebviewSettings,
   WebviewGraph,
   WorkspaceLayout
 } from '../scanner/model';
@@ -112,6 +116,7 @@ const edgeLayer = requireElement<SVGSVGElement>('edge-layer');
 const dependencyArrow = requireElement<SVGMarkerElement>('dependency-arrow');
 const nodeLayer = requireElement<HTMLDivElement>('node-layer');
 const status = requireElement<HTMLDivElement>('status');
+const stateSummary = requireElement<HTMLDivElement>('state-summary');
 const warning = requireElement<HTMLDivElement>('warning');
 const layoutWarning = requireElement<HTMLDivElement>('layout-warning');
 const tooltip = requireElement<HTMLDivElement>('tooltip');
@@ -125,10 +130,14 @@ const nodeLanguage = requireElement<HTMLParagraphElement>('node-language');
 const nodeState = requireElement<HTMLParagraphElement>('node-state');
 const nodeAgents = requireElement<HTMLParagraphElement>('node-agents');
 const nodeErrors = requireElement<HTMLParagraphElement>('node-errors');
+const errorSourceField = requireElement<HTMLDivElement>('error-source-field');
+const nodeErrorSourceList = requireElement<HTMLUListElement>('node-error-source-list');
 const diagnosticField = requireElement<HTMLDivElement>('diagnostic-field');
 const nodeDiagnostics = requireElement<HTMLUListElement>('node-diagnostics');
 const testFailureField = requireElement<HTMLDivElement>('test-failure-field');
 const nodeTestFailures = requireElement<HTMLUListElement>('node-test-failures');
+const agentReportField = requireElement<HTMLDivElement>('agent-report-field');
+const nodeAgentReports = requireElement<HTMLUListElement>('node-agent-reports');
 const nodeConflict = requireElement<HTMLDivElement>('node-conflict');
 const autoAnnotation = requireElement<HTMLParagraphElement>('auto-annotation');
 const manualAnnotation = requireElement<HTMLTextAreaElement>('manual-annotation');
@@ -149,6 +158,7 @@ let functionViews = new Map<string, FunctionView>();
 let pendingNodeStates = new Map<string, GraphNode>();
 let agentsById = new Map<string, AgentSnapshot>();
 let diagnosticsByNode = new Map<string, NodeDiagnostic[]>();
+let agentReportsByNode = new Map<string, AgentReportDetail[]>();
 let testRunSnapshot: TestRunSnapshot = {
   phase: 'idle',
   outcome: null,
@@ -966,6 +976,20 @@ function applyStateUpdate(update: NodeStateUpdate): void {
       ])
     );
   }
+  if (update.agentReports !== undefined) {
+    agentReportsByNode = new Map(
+      Object.entries(update.agentReports).map(([nodeId, reports]) => [
+        nodeId,
+        reports.map((report) => ({ ...report }))
+      ])
+    );
+  }
+  if (update.settings !== undefined) {
+    applyWebviewSettings(update.settings);
+  }
+  if (update.summary !== undefined) {
+    renderStatusSummary(update.summary);
+  }
   for (const incoming of update.nodes) {
     const current = fileById.get(incoming.id) ?? functionById.get(incoming.id);
     if (current) {
@@ -1246,9 +1270,39 @@ function updateSelectedStateDetails(node: GraphNode): void {
   nodeErrors.textContent = node.errorSources.length > 0
     ? node.errorSources.join(', ')
     : 'none';
+  renderErrorSourceList(node.errorSources);
   renderSelectedDiagnostics(node.id);
   renderSelectedTestFailures(node.id);
+  renderSelectedAgentReports(node.id);
   nodeConflict.hidden = !hasAgentConflict(node);
+}
+
+function renderErrorSourceList(
+  sources: readonly GraphNode['errorSources'][number][]
+): void {
+  const labels: Record<GraphNode['errorSources'][number], {
+    icon: string;
+    label: string;
+  }> = {
+    test: { icon: 'T', label: 'Test failure' },
+    diagnostic: { icon: 'D', label: 'Static diagnostic' },
+    runtime: { icon: 'R', label: 'Runtime exception' },
+    agent: { icon: 'A', label: 'Agent report' }
+  };
+  errorSourceField.hidden = sources.length === 0;
+  nodeErrorSourceList.replaceChildren(...sources.map((source) => {
+    const item = document.createElement('li');
+    item.className = `error-source-chip error-source-${source}`;
+    const icon = document.createElement('span');
+    icon.className = 'error-source-icon';
+    const iconText = document.createElement('span');
+    iconText.textContent = labels[source].icon;
+    icon.append(iconText);
+    const label = document.createElement('span');
+    label.textContent = `${source} — ${labels[source].label}`;
+    item.append(icon, label);
+    return item;
+  }));
 }
 
 function renderSelectedDiagnostics(nodeId: string): void {
@@ -1312,6 +1366,37 @@ function renderSelectedTestFailures(nodeId: string): void {
     item.append(button);
     return item;
   }));
+}
+
+function renderSelectedAgentReports(nodeId: string): void {
+  const reports = agentReportsByNode.get(nodeId) ?? [];
+  agentReportField.hidden = reports.length === 0;
+  nodeAgentReports.replaceChildren(...reports.map((report) => {
+    const item = document.createElement('li');
+    item.className = 'agent-report-entry';
+    const heading = document.createElement('span');
+    heading.className = 'agent-report-heading';
+    heading.textContent = `${report.agentName} (${report.agentId})`;
+    const message = document.createElement('span');
+    message.className = 'agent-report-message';
+    message.textContent = report.message;
+    item.append(heading, message);
+    return item;
+  }));
+}
+
+function renderStatusSummary(summary: StatusSummary): void {
+  stateSummary.textContent = `${summary.activeAgents} agents active · `
+    + `${summary.editingNodes} editing · `
+    + `${summary.errorNodes} errors · `
+    + `${summary.passingNodes} passing`;
+}
+
+function applyWebviewSettings(settings: WebviewSettings): void {
+  document.body.classList.toggle(
+    'flash-disabled',
+    !settings.flashAnimations
+  );
 }
 
 function applyTestRun(snapshot: TestRunSnapshot): void {
@@ -1901,6 +1986,7 @@ function clearGraph(): void {
   pendingNodeStates.clear();
   agentsById.clear();
   diagnosticsByNode.clear();
+  agentReportsByNode.clear();
   testRunSnapshot = {
     phase: 'idle',
     outcome: null,
@@ -1919,9 +2005,20 @@ function clearGraph(): void {
   nodeDetails.hidden = true;
   diagnosticField.hidden = true;
   nodeDiagnostics.replaceChildren();
+  errorSourceField.hidden = true;
+  nodeErrorSourceList.replaceChildren();
   testFailureField.hidden = true;
   nodeTestFailures.replaceChildren();
+  agentReportField.hidden = true;
+  nodeAgentReports.replaceChildren();
   runTestsButton.disabled = false;
+  document.body.classList.remove('flash-disabled');
+  renderStatusSummary({
+    activeAgents: 0,
+    editingNodes: 0,
+    errorNodes: 0,
+    passingNodes: 0
+  });
   tooltip.hidden = true;
   renderAgentHierarchy();
 }
@@ -2046,6 +2143,18 @@ function isExtensionMessage(
         !('testRun' in update)
         || isTestRunSnapshot(update.testRun)
       )
+      && (
+        !('agentReports' in update)
+        || isNodeAgentReports(update.agentReports)
+      )
+      && (
+        !('summary' in update)
+        || isStatusSummary(update.summary)
+      )
+      && (
+        !('settings' in update)
+        || isWebviewSettings(update.settings)
+      )
     );
   }
   if (type === 'layoutSaved') {
@@ -2059,6 +2168,66 @@ function isExtensionMessage(
     && 'nodeId' in value
     && typeof (value as { nodeId: unknown }).nodeId === 'string'
   );
+}
+
+function isNodeAgentReports(value: unknown): value is NodeAgentReports {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && Object.values(value).every((reports) =>
+      Array.isArray(reports) && reports.every(isAgentReportDetail)
+    )
+  );
+}
+
+function isAgentReportDetail(value: unknown): value is AgentReportDetail {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && 'id' in value
+    && typeof value.id === 'string'
+    && 'agentId' in value
+    && typeof value.agentId === 'string'
+    && 'agentName' in value
+    && typeof value.agentName === 'string'
+    && 'message' in value
+    && typeof value.message === 'string'
+    && 'fileId' in value
+    && typeof value.fileId === 'string'
+    && 'nodeId' in value
+    && typeof value.nodeId === 'string'
+    && 'createdAt' in value
+    && typeof value.createdAt === 'string'
+  );
+}
+
+function isStatusSummary(value: unknown): value is StatusSummary {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && 'activeAgents' in value
+    && isNonNegativeInteger(value.activeAgents)
+    && 'editingNodes' in value
+    && isNonNegativeInteger(value.editingNodes)
+    && 'errorNodes' in value
+    && isNonNegativeInteger(value.errorNodes)
+    && 'passingNodes' in value
+    && isNonNegativeInteger(value.passingNodes)
+  );
+}
+
+function isWebviewSettings(value: unknown): value is WebviewSettings {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && 'flashAnimations' in value
+    && typeof value.flashAnimations === 'boolean'
+  );
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
 function isTestRunSnapshot(value: unknown): value is TestRunSnapshot {
