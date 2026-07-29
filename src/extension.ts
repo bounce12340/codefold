@@ -46,6 +46,8 @@ const VIEW_TYPES = {
 
 type ViewMode = keyof typeof VIEW_TYPES;
 
+let deactivateHookServer: (() => Promise<void>) | undefined;
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const output = vscode.window.createOutputChannel('CodeFold');
   const agentRegistry = new AgentRegistry();
@@ -80,26 +82,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
     }
   });
-
-  try {
-    const info = await hookServer.start();
-    output.appendLine(`Agent hook endpoint: ${info.url}`);
-    output.appendLine(`Agent hook token: ${info.token}`);
-    output.appendLine(
-      'The endpoint is bound only to 127.0.0.1; see docs/agent-hooks.md for hook setup.'
-    );
-  } catch (error) {
-    const detail = formatError(error);
-    output.appendLine(`Could not start the CodeFold agent hook endpoint: ${detail}`);
-    output.show(true);
-  }
+  let hookServerStart: Promise<void> | undefined;
+  let hookServerStop: Promise<void> | undefined;
+  const ensureHookServerStarted = (): Promise<void> => {
+    hookServerStart ??= (async () => {
+      try {
+        const info = await hookServer.start();
+        output.appendLine(`Agent hook endpoint: ${info.url}`);
+        output.appendLine(`Agent hook token: ${info.token}`);
+        output.appendLine(
+          'The endpoint is bound only to 127.0.0.1; see docs/agent-hooks.md for hook setup.'
+        );
+      } catch (error) {
+        const detail = formatError(error);
+        output.appendLine(`Could not start the CodeFold agent hook endpoint: ${detail}`);
+        output.show(true);
+      }
+    })();
+    return hookServerStart;
+  };
+  const stopHookServer = (): Promise<void> => {
+    if (!hookServerStart) {
+      return Promise.resolve();
+    }
+    hookServerStop ??= hookServerStart
+      .then(() => hookServer.stop())
+      .catch((error) => {
+        output.appendLine(
+          `Could not stop the CodeFold agent hook endpoint: ${formatError(error)}`
+        );
+      });
+    return hookServerStop;
+  };
+  deactivateHookServer = stopHookServer;
 
   context.subscriptions.push(
     output,
     statusItem,
-    { dispose: () => void hookServer.stop().catch((error) => {
-      output.appendLine(`Could not stop the CodeFold agent hook endpoint: ${formatError(error)}`);
-    }) },
+    { dispose: () => void stopHookServer() },
     registerGraphCommand(
       context,
       output,
@@ -109,9 +129,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       (runtime) => {
         phase2Runtime = runtime;
       },
-      updateStatusItem
+      updateStatusItem,
+      ensureHookServerStarted
     ),
-    registerGraphCommand(context, output, 'codefold.open3d', '3d'),
+    registerGraphCommand(
+      context,
+      output,
+      'codefold.open3d',
+      '3d',
+      undefined,
+      undefined,
+      undefined,
+      ensureHookServerStarted
+    ),
     vscode.commands.registerCommand('codefold.runTests', async () => {
       if (!phase2Runtime) {
         void vscode.window.showWarningMessage(
@@ -130,8 +160,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 }
 
-export function deactivate(): void {
-  // VS Code disposes resources registered in the extension context.
+export async function deactivate(): Promise<void> {
+  const stopHookServer = deactivateHookServer;
+  deactivateHookServer = undefined;
+  await stopHookServer?.();
 }
 
 function registerGraphCommand(
@@ -141,12 +173,14 @@ function registerGraphCommand(
   mode: ViewMode,
   agentRegistry?: AgentRegistry,
   setPhase2Runtime?: (runtime: Phase2Runtime | undefined) => void,
-  onSummary?: (summary: StatusSummary) => void
+  onSummary?: (summary: StatusSummary) => void,
+  beforeOpen?: () => Promise<void>
 ): vscode.Disposable {
   let currentPanel: vscode.WebviewPanel | undefined;
   let receiveSubscription: vscode.Disposable | undefined;
   let localPhase2Runtime: Phase2Runtime | undefined;
   return vscode.commands.registerCommand(command, async () => {
+    await beforeOpen?.();
     if (currentPanel === undefined) {
       currentPanel = createPanel(context, mode);
       currentPanel.onDidDispose(

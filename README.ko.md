@@ -39,9 +39,10 @@ Development Host가 열리면 다음을 수행합니다.
    열립니다. 닫은 뒤 다시 열어야 한다면 **CodeFold: Open**을 수동으로 실행할 수
    있습니다. 배포 설정의 기본값은 `false`이므로 일반 설치 workspace에서는 사용자가
    직접 활성화하지 않는 한 자동으로 열리지 않습니다.
-3. `View → Output`을 열고 **CodeFold**를 선택한 다음 `Agent hook endpoint`와
-   `Agent hook token`을 기록합니다. 엔드포인트는 `127.0.0.1`에만 바인딩됩니다.
-   Extension Host를 재시작할 때마다 두 값을 다시 가져오십시오.
+3. 자동 또는 수동 캔버스 열기 명령을 실행한 뒤 `View → Output`을 열고
+   **CodeFold**를 선택한 다음 `Agent hook endpoint`와 `Agent hook token`을
+   기록합니다. 엔드포인트는 `127.0.0.1`에만 바인딩됩니다. Extension Host를
+   재시작할 때마다 두 값을 다시 가져오십시오.
 4. 폴더 제목을 클릭하면 수동으로 펼쳐지고, 파일 화살표를 클릭하면 함수가 펼쳐집니다.
    한 번 클릭하면 사이드바를 확인하고, 두 번 클릭하면 파일을 엽니다.
 
@@ -80,6 +81,13 @@ JSON report를 다시 작성해야 합니다. CodeFold는 대상 프로젝트의
 않습니다.
 
 ## 에이전트 hooks 연결
+
+배포되는 `codefold.openOnStartup`의 기본값이 `false`이면 extension을
+activate하는 것만으로는 hook server가 시작되지 않습니다. 먼저
+**CodeFold: Open** 또는 **CodeFold: Open 3D View**를 실행하십시오. 첫 번째
+캔버스 열기 명령이 엔드포인트를 시작하고 **CodeFold** Output에 URL과 token을
+출력합니다. 캔버스를 닫아도 엔드포인트는 중지되지 않으며 extension이
+deactivate될 때까지 사용할 수 있습니다.
 
 공용 bridge는
 [`examples/hooks/codefold-hook.mjs`](examples/hooks/codefold-hook.mjs)입니다. 먼저

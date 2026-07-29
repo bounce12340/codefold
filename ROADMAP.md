@@ -26,13 +26,13 @@ extension＋原生 DOM/SVG 架構估算：低（數天）、中（約 1–3 週�
 15. **解除 preview 測試與既有 build 產物耦合** — 值得做：目前 `tests/previewHarness.test.ts` 讀 `tools/preview/index.html`，改 src 後未 build 會假性失敗；測試內呼叫同一 build helper 產生暫存 HTML 可消除此陷阱。**這是已在發生的缺陷而非未來強化**：Phase 3–5 的每次派工都得附警語提醒先 build，屬應優先清除的技術債。**難度：低**。
 16. **把狀態形狀編碼擴及完整無障礙設計** — 值得做：editing/dirty 已證明只靠相近黃邊框不足，將形狀、圖示、ARIA 與非色彩差異推廣到 error/passing/unknown 可改善色覺障礙與快速掃視。**難度：中**。
 17. **跨重開的 agent report 持久化與確認流程** — 值得做：目前 active report 屬於畫布 session；持久化、acknowledge/resolve 歷程能避免關閉畫布後遺失尚未處理的 AI 問題。**難度：中**。
-18. **agent hook 端點改為 lazy 啟動** — 值得做：為支援 `codefold.openOnStartup`，`activationEvents` 含 `onStartupFinished`，因此**即使該設定為 `false`，擴充仍會在每次 VS Code 啟動時載入並開啟 localhost 掛勾端點**。端點雖只綁 127.0.0.1 且需 token，但對沒在用畫布的使用者而言是非必要的常駐監聽。可改為畫布開啟或收到第一個設定啟用訊號時才啟動；需一併保留「畫布未開時仍能接收代理事件」的既有設計意圖。**難度：低至中**。
+18. ~~**agent hook 端點改為 lazy 啟動**~~ — **已完成**。原問題：為支援 `codefold.openOnStartup`，`activationEvents` 含 `onStartupFinished`，因此即使該設定為 `false`，擴充仍會在每次 VS Code 啟動時開啟 localhost 掛勾端點。現行為：activation 只做輕量註冊，第一次執行 `CodeFold: Open` 或 `CodeFold: Open 3D View` 才啟動端點；關閉畫布不停止（保留「畫布未開時仍能接收代理事件」的既有設計），只有 extension deactivate 才停止。
 
 ## 建議優先順序
 
 難度只說明成本，不說明該先做什麼。以下依「投入產出比」分三層，供實際排程參考：
 
-- **第一層｜低成本、痛點已在發生**：15（測試耦合，實質是缺陷）、18（端點常駐，影響所有安裝者）、6（暗區，基礎設施已備）。
+- **第一層｜低成本、痛點已在發生**：15（測試耦合，實質是缺陷）、6（暗區，基礎設施已備）。〔18 已完成〕
 - **第二層｜放大既有投資**：14（獨立檢視器——`tools/preview/` 已證明畫布可脫離 VS Code）、16（無障礙——形狀編碼的做法在 Phase 2 已驗證有效）、13（測試事件序列）、7（依賴健康，可疊在既有 import/call graph 上）。
 - **第三層｜需要研究或跨模組重投入**：1（即時追蹤）、8（效能映射）、3（Git 回放）、9（畫布派工）、10（戰情室）、12（3D 復活）；2（更多語言）與 11（AI 摘要）視實際需求插入。
 

@@ -37,9 +37,9 @@ Host 打开后：
    `codefold.openOnStartup` 设为 `true`，因此 2D 画布会自动打开。关闭后如需
    重新打开，仍可手动运行 **CodeFold: Open**。发布设置的默认值是 `false`，
    因此普通安装后的 workspace 不会自动打开，除非用户主动启用。
-3. 打开 `View → Output`，选择 **CodeFold**，记录 `Agent hook endpoint` 和
-   `Agent hook token`。端点仅绑定 `127.0.0.1`；每次 Extension Host 重启后
-   都要重新获取这两个值。
+3. 自动或手动的画布打开命令运行后，打开 `View → Output`，选择 **CodeFold**，
+   记录 `Agent hook endpoint` 和 `Agent hook token`。端点仅绑定
+   `127.0.0.1`；每次 Extension Host 重启后都要重新获取这两个值。
 4. 单击文件夹标题可手动展开；单击文件箭头展开函数；单击查看侧栏，双击打开文件。
 
 如需打开独立的 3D 展示，请运行 **CodeFold: Open 3D View**
@@ -74,6 +74,12 @@ npm run preview
 且命令必须重写上表指定的 JSON report；CodeFold 不会修改目标项目的依赖项。
 
 ## 连接代理 hooks
+
+发布设置中 `codefold.openOnStartup` 的默认值为 `false`；仅激活 extension
+不会启动 hook server。请先运行 **CodeFold: Open** 或
+**CodeFold: Open 3D View**；第一个画布打开命令会启动端点，并在
+**CodeFold** Output 中输出 URL 和 token。关闭画布不会停止端点；它会持续可用，
+直到 extension 停用。
 
 共用 bridge 是
 [`examples/hooks/codefold-hook.mjs`](examples/hooks/codefold-hook.mjs)。请先在

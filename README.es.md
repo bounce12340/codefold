@@ -41,7 +41,8 @@ Extension Development Host:
    **CodeFold: Open**. El valor predeterminado de la versión distribuida es `false`;
    por ello, no se abre automáticamente en los workspace con una instalación normal,
    salvo que el usuario lo habilite.
-3. Abre `View → Output`, selecciona **CodeFold** y anota `Agent hook endpoint` y
+3. Después de ejecutar automática o manualmente el comando para abrir el lienzo,
+   abre `View → Output`, selecciona **CodeFold** y anota `Agent hook endpoint` y
    `Agent hook token`. El endpoint solo se enlaza a `127.0.0.1`; vuelve a obtener
    ambos valores cada vez que se reinicie el Extension Host.
 4. Haz clic en el título de una carpeta para expandirla manualmente y en la flecha de
@@ -83,6 +84,13 @@ comando debe volver a escribir el JSON report indicado arriba. CodeFold no modif
 las dependencias del proyecto de destino.
 
 ## Conectar hooks de agentes
+
+Con el valor predeterminado distribuido `false` de `codefold.openOnStartup`, la mera
+activación de la extensión no inicia el hook server. Ejecuta primero
+**CodeFold: Open** o **CodeFold: Open 3D View**; ese primer comando para abrir el
+lienzo inicia el endpoint y muestra su URL y su token en **CodeFold** Output. Cerrar
+el lienzo no detiene el endpoint; permanece disponible hasta que se desactiva la
+extensión.
 
 El bridge compartido es
 [`examples/hooks/codefold-hook.mjs`](examples/hooks/codefold-hook.mjs). Primero,

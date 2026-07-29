@@ -39,7 +39,8 @@ Development Host が開いたら、次の手順を実行します。
    自動的に開きます。閉じた後に再度開く場合は、**CodeFold: Open** を手動で
    実行できます。出荷時の設定値は `false` なので、通常のインストール先 workspace
    では、ユーザーが有効にしない限り自動的に開きません。
-3. `View → Output` を開いて **CodeFold** を選択し、`Agent hook endpoint` と
+3. キャンバスを自動または手動で開くコマンドが実行された後、
+   `View → Output` を開いて **CodeFold** を選択し、`Agent hook endpoint` と
    `Agent hook token` を記録します。エンドポイントは `127.0.0.1` にのみ
    バインドされます。Extension Host を再起動するたびに、両方の値を再取得してください。
 4. フォルダー名をクリックすると手動で展開し、ファイルの矢印をクリックすると
@@ -81,6 +82,13 @@ coverage、coverage.py など）があらかじめインストールされてい
 CodeFold は対象プロジェクトの依存関係を変更しません。
 
 ## エージェント hooks を接続する
+
+出荷時の `codefold.openOnStartup` の既定値が `false` の場合、extension を
+activate しただけでは hook server は起動しません。まず **CodeFold: Open**
+または **CodeFold: Open 3D View** を実行してください。最初のキャンバスを
+開くコマンドでエンドポイントが起動し、**CodeFold** Output に URL と token が
+表示されます。キャンバスを閉じてもエンドポイントは停止せず、extension が
+deactivate されるまで利用できます。
 
 共通 bridge は
 [`examples/hooks/codefold-hook.mjs`](examples/hooks/codefold-hook.mjs) です。まず、

@@ -41,7 +41,8 @@ nouvel Extension Development Host s’ouvre :
    devez le rouvrir. La valeur livrée par défaut est `false` : les workspace ordinaires
    où l’extension est installée ne l’ouvrent pas automatiquement sans activation par
    l’utilisateur.
-3. Ouvrez `View → Output`, sélectionnez **CodeFold**, puis notez `Agent hook endpoint`
+3. Après l’exécution automatique ou manuelle de la commande d’ouverture du canevas,
+   ouvrez `View → Output`, sélectionnez **CodeFold**, puis notez `Agent hook endpoint`
    et `Agent hook token`. L’endpoint se lie uniquement à `127.0.0.1` ; récupérez à
    nouveau ces deux valeurs après chaque redémarrage de l’Extension Host.
 4. Cliquez sur le titre d’un dossier pour le développer manuellement, sur la flèche
@@ -83,6 +84,13 @@ doit réécrire le JSON report indiqué ci-dessus. CodeFold ne modifie pas les d
 du projet cible.
 
 ## Connecter les hooks d’agents
+
+Avec la valeur livrée par défaut `false` de `codefold.openOnStartup`, la seule
+activation de l’extension ne démarre pas le hook server. Exécutez d’abord
+**CodeFold: Open** ou **CodeFold: Open 3D View** ; cette première commande
+d’ouverture du canevas démarre l’endpoint et affiche son URL et son token dans
+**CodeFold** Output. La fermeture du canevas n’arrête pas l’endpoint ; il reste
+disponible jusqu’à la désactivation de l’extension.
 
 Le bridge partagé est
 [`examples/hooks/codefold-hook.mjs`](examples/hooks/codefold-hook.mjs). Commencez par

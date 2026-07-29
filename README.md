@@ -39,9 +39,10 @@ Development Host opens:
    run **CodeFold: Open** manually if you close it or need to reopen it. The shipped
    setting defaults to `false`, so ordinary installed workspaces do not open it
    automatically unless the user opts in.
-3. Open `View → Output`, select **CodeFold**, and record the `Agent hook endpoint`
-   and `Agent hook token`. The endpoint binds only to `127.0.0.1`; retrieve both
-   values again whenever the Extension Host restarts.
+3. After the automatic or manual canvas-open command runs, open `View → Output`,
+   select **CodeFold**, and record the `Agent hook endpoint` and `Agent hook token`.
+   The endpoint binds only to `127.0.0.1`; retrieve both values again whenever the
+   Extension Host restarts.
 4. Click a folder title to expand it manually; click a file arrow to expand its
    functions; single-click to inspect the sidebar, and double-click to open the file.
 
@@ -80,6 +81,12 @@ and its command must rewrite the JSON report specified above. CodeFold does not
 modify the target project's dependencies.
 
 ## Connect agent hooks
+
+With the shipped `codefold.openOnStartup` default of `false`, extension activation
+alone does not start the hook server. Run **CodeFold: Open** or
+**CodeFold: Open 3D View** first; that first canvas-open command starts the endpoint
+and prints its URL and token in **CodeFold** Output. Closing the canvas does not stop
+the endpoint; it remains available until the extension deactivates.
 
 The shared bridge is
 [`examples/hooks/codefold-hook.mjs`](examples/hooks/codefold-hook.mjs). First, set

@@ -1,8 +1,12 @@
 # CodeFold agent hooks
 
-CodeFold 的 2D 視圖啟動後，extension 會在 `127.0.0.1` 的隨機 port 開啟
-`/events`，並在 **CodeFold** output channel 顯示 URL 與隨機 token。端點不監聽
-LAN 介面；每次 extension host 重啟都應重新取得這兩個值。
+出貨預設的 `codefold.openOnStartup` 為 `false` 時，只有 extension activation
+不會啟動 hook server。第一次執行 **CodeFold: Open** 或
+**CodeFold: Open 3D View** 時，extension 才會在 `127.0.0.1` 的隨機 port 開啟
+`/events`，並在 **CodeFold** output channel 顯示 URL 與隨機 token。若
+`codefold.openOnStartup` 為 `true`，自動開啟 2D 畫布也會啟動端點。關閉畫布不會
+停止端點，因此畫布未開啟時仍可接收代理事件；端點只會在 extension deactivate
+時停止。端點不監聽 LAN 介面；每次 extension host 重啟都應重新取得這兩個值。
 
 先在啟動 agent CLI 的同一個 shell 設定環境變數，讓 hook subprocess 繼承：
 
