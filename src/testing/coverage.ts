@@ -9,6 +9,12 @@ export interface CoverageRecord {
 export interface CoverageMapping {
   nodeIds: string[];
   sequence: string[];
+  /**
+   * Nodes the coverage report knows about but never executed. Files absent from
+   * the report are deliberately excluded: the tool simply did not instrument
+   * them, which is not the same claim as "no test ever ran this".
+   */
+  uncoveredNodeIds: string[];
 }
 
 export function parseCoverageJson(value: string): CoverageRecord[] {
@@ -52,24 +58,44 @@ export function mapCoverageToNodes(
 
   const sequence: string[] = [];
   const covered = new Set<string>();
+  const uncovered = new Set<string>();
   for (const record of records) {
     const file = resolveFileNode(record.path, files, workspaceRoot);
-    if (!file || record.executedLines.length === 0) {
+    if (!file) {
+      continue;
+    }
+    const siblings = functionsByPath.get(file.id) ?? [];
+    if (record.executedLines.length === 0) {
+      uncovered.add(file.id);
+      for (const candidate of siblings) {
+        uncovered.add(candidate.id);
+      }
       continue;
     }
     appendUnique(sequence, covered, file.id);
     const executed = new Set(record.executedLines);
-    for (const candidate of functionsByPath.get(file.id) ?? []) {
+    for (const candidate of siblings) {
       if (
         [...executed].some((line) =>
           candidate.range.startLine <= line && line <= candidate.range.endLine
         )
       ) {
         appendUnique(sequence, covered, candidate.id);
+      } else {
+        uncovered.add(candidate.id);
       }
     }
   }
-  return { nodeIds: [...covered].sort(), sequence };
+  // A node reported empty by one record and executed by another is covered;
+  // partial reports must not darken something a test demonstrably reached.
+  for (const nodeId of covered) {
+    uncovered.delete(nodeId);
+  }
+  return {
+    nodeIds: [...covered].sort(),
+    sequence,
+    uncoveredNodeIds: [...uncovered].sort()
+  };
 }
 
 function parseCoveragePy(files: Record<string, unknown>): CoverageRecord[] {

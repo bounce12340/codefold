@@ -24,7 +24,8 @@ export class TestRunTracker {
     outcome: null,
     sequence: [],
     failures: {},
-    message: null
+    message: null,
+    uncovered: []
   };
 
   constructor(
@@ -39,7 +40,8 @@ export class TestRunTracker {
       outcome: null,
       sequence: [],
       failures: {},
-      message: 'Tests are running.'
+      message: 'Tests are running.',
+      uncovered: []
     };
     this.stateStore.setVerifying(candidateNodeIds);
     return this.snapshot();
@@ -71,7 +73,8 @@ export class TestRunTracker {
       outcome: null,
       sequence: [...coverage.sequence],
       failures: cloneFailures(failureMapping.failures),
-      message
+      message,
+      uncovered: [...coverage.uncoveredNodeIds]
     };
     this.stateStore.setVerifying(coverage.nodeIds);
     return { coverage, failureMapping, passed: !failed, message };
@@ -94,7 +97,8 @@ export class TestRunTracker {
       outcome: result.passed ? 'passed' : 'failed',
       sequence: [...result.coverage.sequence],
       failures: cloneFailures(result.failureMapping.failures),
-      message: result.message
+      message: result.message,
+      uncovered: [...result.coverage.uncoveredNodeIds]
     };
     return this.snapshot();
   }
@@ -106,7 +110,8 @@ export class TestRunTracker {
       outcome: 'failed',
       sequence: [],
       failures: {},
-      message
+      message,
+      uncovered: []
     };
     return this.snapshot();
   }
@@ -115,7 +120,8 @@ export class TestRunTracker {
     return {
       ...this.current,
       sequence: [...this.current.sequence],
-      failures: cloneFailures(this.current.failures)
+      failures: cloneFailures(this.current.failures),
+      uncovered: [...this.current.uncovered]
     };
   }
 }

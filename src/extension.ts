@@ -1457,6 +1457,23 @@ function get2dWebviewHtml(
     .file-card.node-conflict, .function-card.node-conflict {
       outline: 2px dotted var(--vscode-foreground); outline-offset: 2px;
     }
+    /* Coverage dark zone: instrumented but never executed. Dimming plus a
+       dashed edge, so it reads as "unlit" without adding a fifth status colour
+       and without overriding whatever state the node is actually in. */
+    .file-card.coverage-gap, .function-card.coverage-gap {
+      border-style: dashed;
+      opacity: .58;
+      filter: saturate(.55);
+    }
+    .file-card.coverage-gap .node-annotation,
+    .function-card.coverage-gap .function-owner {
+      opacity: .8;
+    }
+    .file-card.coverage-gap:hover, .function-card.coverage-gap:hover,
+    .file-card.coverage-gap.selected, .function-card.coverage-gap.selected {
+      opacity: 1;
+      filter: none;
+    }
     @keyframes editing-flash {
       from {
         box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-editing) 35%, transparent),
@@ -1531,13 +1548,28 @@ function get2dWebviewHtml(
       border: 1px solid color-mix(in srgb, var(--vscode-editor-background) 70%, transparent);
       background: var(--state-neutral);
     }
+    /* Shape carries the state as well as colour, so red/green stay separable
+       without hue and survive codefold.flashAnimations being turned off.
+       Circle = editing/verifying, hollow circle = idle, bar = dirty,
+       triangle = error, square = passing. */
     .node-state-editing .node-state-lamp { background: var(--state-editing); }
+    .node-state-idle .node-state-lamp {
+      background: transparent;
+      border-width: 2px; border-color: var(--state-neutral);
+    }
     .node-state-dirty .node-state-lamp {
       width: 12px; height: 5px; border-radius: 1px;
       background: var(--state-dirty);
     }
-    .node-state-error .node-state-lamp { background: var(--state-error); }
-    .node-state-passing .node-state-lamp { background: var(--state-passing); }
+    .node-state-error .node-state-lamp {
+      width: 11px; height: 10px; border: 0; border-radius: 0;
+      background: var(--state-error);
+      clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+    }
+    .node-state-passing .node-state-lamp {
+      width: 9px; height: 9px; border-radius: 1px;
+      background: var(--state-passing);
+    }
     .agent-badges {
       position: absolute; z-index: 4; right: 7px; bottom: 6px;
       display: flex; align-items: center; gap: 4px;

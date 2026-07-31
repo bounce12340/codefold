@@ -92,6 +92,11 @@ export interface TestRunSnapshot {
   sequence: string[];
   failures: NodeTestFailures;
   message: string | null;
+  /**
+   * Instrumented but never executed. Rendered as a dimmed "dark zone" overlay
+   * rather than a NodeState, so it never competes with the state precedence.
+   */
+  uncovered: string[];
 }
 
 export interface StatusSummary {

@@ -9,12 +9,12 @@ npm ci
 npm run typecheck            # tsc --noEmit — the only static gate; no linter is configured
 npm run build                # esbuild -> dist/ + copies tree-sitter wasm + regenerates the preview harness
 npm run watch                # same builds in watch mode
-npm test                     # vitest run (81 tests / 18 files)
+npm test                     # vitest run (86 tests / 18 files)
 npm run test:watch
 npx vitest run tests/imports.test.ts          # single file
 npx vitest run -t 'resolves relative imports'  # single test by name
 npm run preview              # static server for the browser harness at http://127.0.0.1:4173/tools/preview/
-npm run preview:verify       # 23 headless scenarios, asserts DOM/CSS invariants
+npm run preview:verify       # 25 headless scenarios, asserts DOM/CSS invariants
 ```
 
 `npm test` does not require a prior build. `tests/previewHarness.test.ts` calls
@@ -73,6 +73,13 @@ Clearing one source must never clear the others — that is what `clearError(ids
 and `replaceErrorSource(source, activeIds)` exist for. Human edits debounce to `dirty`
 after `EDITING_DEBOUNCE_MS` (2s).
 
+Coverage dark zones are deliberately **not** a `NodeState`. `mapCoverageToNodes` returns
+`uncoveredNodeIds` alongside the covered ones, which rides to the webview on
+`TestRunSnapshot.uncovered` and renders as a `coverage-gap` overlay class. A blind spot can
+be idle, dirty or error at the same time, so folding it into the state enum would corrupt
+the precedence above. Files absent from the coverage report are never darkened — that means
+the tool did not instrument them, which is a different claim from "no test ran this".
+
 ### Phase2Runtime wires it together
 
 `createPhase2Runtime` in `src/extension.ts` is the composition root, created per 2D panel
@@ -126,7 +133,11 @@ These come from `PROMPT.md` (the project spec) and are not negotiable without as
 
 - **Color semantics are fixed**: yellow flash = agent editing, red flash = error, green =
   passing, blue-gray = unknown. Do not repurpose them or add confusable colors. Red/green
-  must also differ by shape or icon, not color alone.
+  must also differ by shape or icon, not color alone — the state lamp encodes this
+  (circle = editing, hollow circle = idle, bar = dirty, triangle = error, square =
+  passing), and `assertDistinctShapes()` in `preview:verify` fails the build if two states
+  ever collapse to the same colour-independent signature. It checks with
+  `codefold.flashAnimations` off too, since that setting removes the animation cue.
 - **No frontend framework in the webview** — native DOM + SVG, CSS transitions, `d3-force`
   for layout. No React/Vue/canvas libraries.
 - **No silent failures.** Empty catches are banned; parse failures, test command failures,

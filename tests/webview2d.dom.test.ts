@@ -300,6 +300,55 @@ describe('Phase 2 webview DOM rendering', () => {
     expect(d3Spies.forceSimulation).toHaveBeenCalledTimes(forceCallsBefore);
   });
 
+  it('marks uncovered nodes as a dark zone without changing their state', () => {
+    // Both groups need a state that keeps them expanded; a fully passing run
+    // folds them and there would be no cards left to assert on.
+    sendState(
+      [
+        nodeState('src/alpha.ts', 'error', [], ['test']),
+        nodeState('lib/beta.ts', 'editing')
+      ],
+      [],
+      {},
+      testRun('complete', 'failed', ['src/alpha.ts'], ['lib/beta.ts'])
+    );
+
+    const covered = requiredFileCard('src/alpha.ts');
+    const gap = requiredFileCard('lib/beta.ts');
+
+    expect(covered.classList.contains('coverage-gap')).toBe(false);
+    expect(gap.classList.contains('coverage-gap')).toBe(true);
+    // The overlay coexists with the state machine's own class instead of
+    // replacing it — a blind spot can be in any state.
+    expect(gap.classList.contains('node-state-editing')).toBe(true);
+    expect(gap.dataset.state).toBe('editing');
+    expect(gap.getAttribute('aria-label')).toContain('not covered by tests');
+
+    sendState(
+      [
+        nodeState('src/alpha.ts', 'error', [], ['test']),
+        nodeState('lib/beta.ts', 'editing')
+      ],
+      [],
+      {},
+      testRun('complete', 'failed', ['src/alpha.ts', 'lib/beta.ts'])
+    );
+
+    const relit = requiredFileCard('lib/beta.ts');
+    expect(relit.classList.contains('coverage-gap')).toBe(false);
+    expect(relit.getAttribute('aria-label')).not.toContain('not covered');
+  });
+
+  it('carries node state in the card label rather than colour alone', () => {
+    sendState([nodeState('src/alpha.ts', 'error', [], ['test', 'agent'])]);
+
+    const label = requiredFileCard('src/alpha.ts').getAttribute('aria-label') ?? '';
+
+    expect(label).toContain('state error');
+    expect(label).toContain('test, agent');
+    expect(label).toContain('src/alpha.ts');
+  });
+
   it('renders a failing test and opens its exact stack location', () => {
     const failure = testFailure();
     sendState(
@@ -525,14 +574,16 @@ function sendState(
 function testRun(
   phase: TestRunSnapshot['phase'],
   outcome: TestRunSnapshot['outcome'],
-  sequence: string[]
+  sequence: string[],
+  uncovered: string[] = []
 ): TestRunSnapshot {
   return {
     phase,
     outcome,
     sequence,
     failures: {},
-    message: phase === 'flow' ? 'Tests are flowing.' : 'Tests completed.'
+    message: phase === 'flow' ? 'Tests are flowing.' : 'Tests completed.',
+    uncovered
   };
 }
 
