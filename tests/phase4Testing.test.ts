@@ -46,6 +46,63 @@ describe('Phase 4 test tracking', () => {
       'src/panel.ts',
       'src/panel.ts#renderPanel'
     ]);
+    // savePanel is instrumented but no statement inside it ran.
+    expect(mapping.uncoveredNodeIds).toEqual(['src/panel.ts#savePanel']);
+  });
+
+  it('darkens every function of a file the report shows as fully unexecuted', () => {
+    const records = parseCoverageJson(JSON.stringify({
+      'C:\\repo\\src\\panel.ts': {
+        path: 'C:\\repo\\src\\panel.ts',
+        statementMap: {
+          0: { start: { line: 14, column: 2 }, end: { line: 14, column: 12 } },
+          1: { start: { line: 40, column: 0 }, end: { line: 40, column: 4 } }
+        },
+        s: { 0: 0, 1: 0 }
+      }
+    }));
+
+    const mapping = mapCoverageToNodes(graphNodes(), records, workspaceRoot);
+
+    expect(mapping.nodeIds).toEqual([]);
+    expect(mapping.sequence).toEqual([]);
+    expect(mapping.uncoveredNodeIds).toEqual([
+      'src/panel.ts',
+      'src/panel.ts#renderPanel',
+      'src/panel.ts#savePanel'
+    ]);
+  });
+
+  it('leaves files the coverage report never mentions out of the dark zone', () => {
+    const records = parseCoverageJson(JSON.stringify({
+      files: {
+        'python/other.py': { executed_lines: [1], missing_lines: [] }
+      }
+    }));
+
+    const mapping = mapCoverageToNodes(graphNodes(), records, workspaceRoot);
+
+    // An uninstrumented file is not evidence that no test ran it, so nothing
+    // in the TS graph may be darkened by a Python-only report.
+    expect(mapping.uncoveredNodeIds).toEqual([]);
+    expect(mapping.nodeIds).toEqual([]);
+  });
+
+  it('keeps a node covered when one report hits it and another reports it empty', () => {
+    const mapping = mapCoverageToNodes(
+      graphNodes(),
+      [
+        { path: 'C:\\repo\\src\\panel.ts', executedLines: [] },
+        { path: 'C:\\repo\\src\\panel.ts', executedLines: [13] }
+      ],
+      workspaceRoot
+    );
+
+    expect(mapping.nodeIds).toEqual([
+      'src/panel.ts',
+      'src/panel.ts#renderPanel'
+    ]);
+    expect(mapping.uncoveredNodeIds).toEqual(['src/panel.ts#savePanel']);
   });
 
   it('parses coverage.py JSON using one-based executed lines', () => {

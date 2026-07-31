@@ -38,7 +38,9 @@ try {
     ['all-error-sources', 'dark'],
     ['status-bar-summary', 'dark'],
     ['multi-agent-lifecycle', 'dark', 'active'],
-    ['multi-agent-lifecycle', 'dark', 'done']
+    ['multi-agent-lifecycle', 'dark', 'done'],
+    ['coverage-gap', 'dark'],
+    ['coverage-gap', 'light']
   ];
   const results = [];
   let baselinePositions;
@@ -495,6 +497,13 @@ function assertScenario(summary) {
           `${summary.metrics.theme} ${state}: border contrast is below 3:1`
         );
       }
+      assertDistinctShapes(summary, ['editing', 'dirty', 'error', 'passing']);
+      for (const state of ['editing', 'dirty', 'error', 'passing']) {
+        assert(
+          summary.metrics.stateCards[state].cardLabel.includes(`state ${state}`),
+          `${summary.metrics.theme} ${state}: card aria-label does not carry the state`
+        );
+      }
       break;
     case 'functions':
       assert(summary.functionCards >= 3, 'function cards missing');
@@ -593,6 +602,10 @@ function assertScenario(summary) {
         && summary.metrics.phase5.errorAnimation === 'none',
         'editing/error animation still runs while flashing is disabled'
       );
+      // With flashing off the animation difference is gone, so shape is the
+      // only non-colour cue left. This is the regression that made red and
+      // green indistinguishable to colour-blind viewers.
+      assertDistinctShapes(summary, ['editing', 'error', 'passing']);
       break;
     case 'multi-agent-lifecycle':
       assert(
@@ -617,8 +630,55 @@ function assertScenario(summary) {
         );
       }
       break;
+    case 'coverage-gap': {
+      const coverage = summary.metrics.coverage;
+      assert(coverage.gapCards === 2, 'both dark-zone cards are not rendered');
+      assert(
+        summary.error === 2 || summary.error + summary.functionError >= 2,
+        'dark-zone scenario lost the error state it shares with the lit card'
+      );
+      // Same state on both sides, so any visual difference is the overlay.
+      assert(
+        Number.parseFloat(coverage.gapOpacity) < Number.parseFloat(coverage.litOpacity),
+        `dark zone is not dimmer than a covered card `
+        + `(${coverage.gapOpacity} vs ${coverage.litOpacity})`
+      );
+      assert(
+        coverage.gapBorderStyle.includes('dashed')
+        && !coverage.litBorderStyle.includes('dashed'),
+        'dark zone is not distinguishable by border style'
+      );
+      assert(
+        coverage.gapLabels.length === 2
+        && coverage.gapLabels.every((label) => label.includes('not covered by tests')),
+        `dark-zone cards do not announce the gap: ${JSON.stringify(coverage.gapLabels)}`
+      );
+      break;
+    }
     default:
       throw new Error(`Unexpected preview scenario: ${summary.scenario}`);
+  }
+}
+
+// PROMPT.md requires red/green to differ by shape or icon, not colour alone.
+// Compares the colour-independent lamp signature across the given states.
+function assertDistinctShapes(summary, states) {
+  const shapes = new Map();
+  for (const state of states) {
+    const metrics = summary.metrics.stateCards[state];
+    assert(metrics, `${summary.scenario}: ${state} card is missing from the scenario`);
+    const shape = metrics.lampShape;
+    assert(
+      shape && !shape.startsWith('/'),
+      `${summary.scenario}: ${state} lamp shape could not be measured`
+    );
+    const clash = shapes.get(shape);
+    assert(
+      clash === undefined,
+      `${summary.scenario}: ${state} and ${clash} share the lamp shape ${shape}, `
+      + 'so they are separable by colour alone'
+    );
+    shapes.set(shape, state);
   }
 }
 

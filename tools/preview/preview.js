@@ -23,7 +23,8 @@
     'agent-report',
     'all-error-sources',
     'status-bar-summary',
-    'multi-agent-lifecycle'
+    'multi-agent-lifecycle',
+    'coverage-gap'
   ];
   const scenarios = {
     clean: {
@@ -168,6 +169,39 @@
             sequence,
             {},
             'Tests passed; covered groups are folded.'
+          )
+        );
+      }
+    },
+    'coverage-gap': {
+      label: 'Coverage dark zones',
+      acceptance: 'ROADMAP 6 — instrumented but never executed nodes read as unlit',
+      run: () => {
+        const sequence = [
+          'src/ui/panel.ts',
+          'src/ui/panel.ts#renderPanel'
+        ];
+        // Every card here is in the same error state, so the only thing that
+        // can differ visually is the coverage overlay itself.
+        sendGraph(['src', 'lib']);
+        sendState(
+          [
+            fileUpdate('src/ui/panel.ts', 'error', [], ['test']),
+            fileUpdate('lib/graph/layout.ts', 'error', [], ['test']),
+            functionUpdate('lib/graph/layout.ts#layoutGroups', 'error')
+          ],
+          [],
+          {},
+          testRun(
+            'complete',
+            'failed',
+            sequence,
+            {},
+            'Tests failed; two nodes were never executed.',
+            [
+              'lib/graph/layout.ts',
+              'lib/graph/layout.ts#layoutGroups'
+            ]
           )
         );
       }
@@ -777,9 +811,34 @@
         lampColor: lampStyle?.backgroundColor || '',
         lampWidth: lampStyle?.width || '',
         lampHeight: lampStyle?.height || '',
-        lampRadius: lampStyle?.borderRadius || ''
+        lampRadius: lampStyle?.borderRadius || '',
+        // Colour-independent signature: two states sharing this string are
+        // indistinguishable to a viewer who cannot tell their hues apart.
+        lampShape: [
+          lampStyle?.width || '',
+          lampStyle?.height || '',
+          lampStyle?.borderRadius || '',
+          lampStyle?.clipPath || 'none',
+          lampStyle?.backgroundColor === 'rgba(0, 0, 0, 0)' ? 'hollow' : 'solid'
+        ].join('/'),
+        cardLabel: card.getAttribute('aria-label') || ''
       };
     }
+
+    const gapCards = Array.from(document.querySelectorAll('.coverage-gap'));
+    const litCard = document.querySelector(
+      '.file-card:not(.coverage-gap), .function-card:not(.coverage-gap)'
+    );
+    const gapStyle = gapCards[0] ? getComputedStyle(gapCards[0]) : null;
+    const litStyle = litCard ? getComputedStyle(litCard) : null;
+    const coverage = {
+      gapCards: gapCards.length,
+      gapOpacity: gapStyle?.opacity || '',
+      gapBorderStyle: gapStyle?.borderStyle || '',
+      litOpacity: litStyle?.opacity || '',
+      litBorderStyle: litStyle?.borderStyle || '',
+      gapLabels: gapCards.map((card) => card.getAttribute('aria-label') || '')
+    };
 
     const parent = document.querySelector(
       '.file-card[data-node-id="src/ui/panel.ts"]'
@@ -794,6 +853,7 @@
       scenario: document.documentElement.dataset.previewScenario || '',
       theme: document.documentElement.dataset.previewTheme || '',
       stateCards,
+      coverage,
       functions: {
         ownerLabels: functions.map((card) =>
           card.querySelector('.function-owner')?.textContent || ''
@@ -1080,8 +1140,8 @@
     };
   }
 
-  function testRun(phase, outcome, sequence, failures, message) {
-    return { phase, outcome, sequence, failures, message };
+  function testRun(phase, outcome, sequence, failures, message, uncovered) {
+    return { phase, outcome, sequence, failures, message, uncovered: uncovered || [] };
   }
 
   function testFailure(fileId, testName, message, source) {

@@ -164,8 +164,10 @@ let testRunSnapshot: TestRunSnapshot = {
   outcome: null,
   sequence: [],
   failures: {},
-  message: null
+  message: null,
+  uncovered: []
 };
+let uncoveredNodeIds = new Set<string>();
 const loadedFunctionFiles = new Set<string>();
 const loadingFunctionFiles = new Set<string>();
 const expandedFunctionFiles = new Set<string>();
@@ -990,6 +992,11 @@ function applyStateUpdate(update: NodeStateUpdate): void {
   if (update.summary !== undefined) {
     renderStatusSummary(update.summary);
   }
+  // Refreshed before the node loop below, because applyNodePresentation folds
+  // the coverage gap into each card's aria-label.
+  if (update.testRun !== undefined) {
+    uncoveredNodeIds = new Set(update.testRun.uncovered);
+  }
   for (const incoming of update.nodes) {
     const current = fileById.get(incoming.id) ?? functionById.get(incoming.id);
     if (current) {
@@ -1085,11 +1092,24 @@ function applyNodePresentation(card: HTMLElement, node: GraphNode): void {
     card.classList.toggle(`node-state-${stateName}`, node.state === stateName);
   }
   card.classList.toggle('node-conflict', hasAgentConflict(node));
+  card.classList.toggle('coverage-gap', uncoveredNodeIds.has(node.id));
   card.dataset.state = node.state;
   const lamp = card.querySelector<HTMLElement>('.node-state-lamp');
   if (lamp) {
     lamp.title = `State: ${node.state}`;
   }
+  // The lamp is aria-hidden decoration, so the state has to reach assistive
+  // technology through the card label itself, not colour or shape alone.
+  const baseLabel = card.dataset.baseLabel ?? card.getAttribute('aria-label') ?? node.name;
+  card.dataset.baseLabel = baseLabel;
+  const errorDetail = node.errorSources.length > 0
+    ? ` via ${node.errorSources.join(', ')}`
+    : '';
+  const coverageDetail = uncoveredNodeIds.has(node.id) ? ', not covered by tests' : '';
+  card.setAttribute(
+    'aria-label',
+    `${baseLabel}, state ${node.state}${errorDetail}${coverageDetail}`
+  );
   const badges = card.querySelector<HTMLElement>('.agent-badges');
   if (!badges) {
     return;
@@ -1409,6 +1429,7 @@ function applyTestRun(snapshot: TestRunSnapshot): void {
   for (const group of groups) {
     group.element.classList.remove('test-run-passing');
   }
+  applyCoverageGaps();
   if (snapshot.phase === 'complete' && snapshot.outcome === 'passed') {
     const touchedGroups = new Set(
       snapshot.sequence
@@ -1428,6 +1449,22 @@ function applyTestRun(snapshot: TestRunSnapshot): void {
   drawEdges();
   if (selectedNodeId) {
     renderSelectedTestFailures(selectedNodeId);
+  }
+}
+
+// Coverage gaps are an overlay, not a NodeState: a node can be idle, dirty or
+// error and still be a test blind spot, so this must not touch the state
+// precedence that NodeStateStore owns.
+function applyCoverageGaps(): void {
+  uncoveredNodeIds = new Set(testRunSnapshot.uncovered);
+  for (const card of Array.from(nodeLayer.querySelectorAll<HTMLElement>(
+    '.file-card, .function-card'
+  ))) {
+    const nodeId = card.dataset.nodeId;
+    card.classList.toggle(
+      'coverage-gap',
+      nodeId !== undefined && uncoveredNodeIds.has(nodeId)
+    );
   }
 }
 
@@ -1992,8 +2029,10 @@ function clearGraph(): void {
     outcome: null,
     sequence: [],
     failures: {},
-    message: null
+    message: null,
+    uncovered: []
   };
+  uncoveredNodeIds.clear();
   loadedFunctionFiles.clear();
   loadingFunctionFiles.clear();
   expandedFunctionFiles.clear();
@@ -2065,6 +2104,7 @@ function cloneDiagnostic(diagnostic: NodeDiagnostic): NodeDiagnostic {
 function cloneTestRun(snapshot: TestRunSnapshot): TestRunSnapshot {
   return {
     ...snapshot,
+    uncovered: [...snapshot.uncovered],
     sequence: [...snapshot.sequence],
     failures: Object.fromEntries(
       Object.entries(snapshot.failures).map(([nodeId, failures]) => [
