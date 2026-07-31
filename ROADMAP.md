@@ -23,17 +23,19 @@ extension＋原生 DOM/SVG 架構估算：低（數天）、中（約 1–3 週�
 
 13. **比 coverage 排序更真實的測試事件序列** — 值得做：Istanbul/c8 與 coverage.py 只記錄命中行，目前按檔案＋函式行號穩定排序；結合 reporter 的 test start/end 至少能建立較可信的跨測試順序，即使尚未做完整 tracer。**難度：中**。
 14. **獨立檢視器與可分享快照** — 值得做：`tools/preview/` 已證明真實 renderer 可脫離 VS Code；產品化後可提供唯讀分享、CI artifact 或戰情室入口。**難度：中**。
-15. **解除 preview 測試與既有 build 產物耦合** — 值得做：目前 `tests/previewHarness.test.ts` 讀 `tools/preview/index.html`，改 src 後未 build 會假性失敗；測試內呼叫同一 build helper 產生暫存 HTML 可消除此陷阱。**這是已在發生的缺陷而非未來強化**：Phase 3–5 的每次派工都得附警語提醒先 build，屬應優先清除的技術債。**難度：低**。
-16. **把狀態形狀編碼擴及完整無障礙設計** — 值得做：editing/dirty 已證明只靠相近黃邊框不足，將形狀、圖示、ARIA 與非色彩差異推廣到 error/passing/unknown 可改善色覺障礙與快速掃視。**難度：中**。
+15. ~~**解除 preview 測試與既有 build 產物耦合**~~ — **已完成**。原問題：`tests/previewHarness.test.ts` 讀 `tools/preview/index.html`，改 src 後未 build 會假性失敗，因此每次派工都得附警語提醒先 build。現行為：`tools/preview/build.mjs` 拆出純函式 `renderPreviewHtml(extensionSource)`，`buildPreviewHarness()` 只負責讀檔與寫檔；測試改呼叫同一個 `renderPreviewHtml` 取得 HTML 字串，不讀產物、不寫暫存檔，也不會覆寫真實的 `index.html`。驗證方式：刪除 `tools/preview/index.html` 後直接跑該測試檔仍全綠。
+16. **把狀態形狀編碼擴及完整無障礙設計** — 值得做：editing/dirty 已證明只靠相近黃邊框不足，將形狀、圖示、ARIA 與非色彩差異推廣到 error/passing/unknown 可改善色覺障礙與快速掃視。**本項已從「強化」重新定性為未達成的 PROMPT 約束**：計畫書「效能與體驗約束」明列「紅/綠除顏色外需輔以形狀或圖示差異」，但目前 error 與 passing 的 `border-width`（皆 2px）與狀態燈（皆 8px 圓形）完全相同，唯一的非顏色差異是「有無閃爍動畫」，而該差異會被 `codefold.flashAnimations: false` 直接抹平——`preview:verify` 的 `status-bar-summary` 情境實測證實此時 editing/error/passing 三者只剩 `borderColor` 不同（分別為 `rgb(204,167,0)`、`rgb(241,76,76)`、`rgb(115,201,145)`），`animationName` 皆為 `none`。另外卡片 `aria-label` 只帶檔名/語言/路徑，不含狀態，狀態僅存在於狀態燈的 hover `title`。四種狀態中只有 `dirty` 做了真正的形狀編碼（左側 4px 軌條＋12×5 長條燈）。**難度：中**。
 17. **跨重開的 agent report 持久化與確認流程** — 值得做：目前 active report 屬於畫布 session；持久化、acknowledge/resolve 歷程能避免關閉畫布後遺失尚未處理的 AI 問題。**難度：中**。
 18. ~~**agent hook 端點改為 lazy 啟動**~~ — **已完成**。原問題：為支援 `codefold.openOnStartup`，`activationEvents` 含 `onStartupFinished`，因此即使該設定為 `false`，擴充仍會在每次 VS Code 啟動時開啟 localhost 掛勾端點。現行為：activation 只做輕量註冊，第一次執行 `CodeFold: Open` 或 `CodeFold: Open 3D View` 才啟動端點；關閉畫布不停止（保留「畫布未開時仍能接收代理事件」的既有設計），只有 extension deactivate 才停止。
+
+19. ~~**`preview:verify` 只能在 Windows 執行**~~ — **已完成**。原問題：`tools/preview/verify.mjs` 的 `findBrowser()` 只查四個寫死的 Windows 路徑（且用 `readFile` 把整個執行檔讀進記憶體來判斷存在），因此這 23 個情境的驗收在 Linux/macOS 直接拋錯，等於非 Windows 環境無法驗收 2D 畫布。現行為：依 `process.platform` 給候選路徑、掃描 `PATH`、並支援 `CODEFOLD_PREVIEW_BROWSER` 覆寫，存在性改用 `access(X_OK)`。**這是本次檢查新發現的缺陷**，先前未進 roadmap，補上並一併修掉。驗證方式：在 Linux + Chromium 實跑 `preview:verify`，23/23 情境通過、browserExitCodes=0、consoleErrors=0——這是該批情境首次在非 Windows 環境執行。
 
 ## 建議優先順序
 
 難度只說明成本，不說明該先做什麼。以下依「投入產出比」分三層，供實際排程參考：
 
-- **第一層｜低成本、痛點已在發生**：15（測試耦合，實質是缺陷）、6（暗區，基礎設施已備）。〔18 已完成〕
-- **第二層｜放大既有投資**：14（獨立檢視器——`tools/preview/` 已證明畫布可脫離 VS Code）、16（無障礙——形狀編碼的做法在 Phase 2 已驗證有效）、13（測試事件序列）、7（依賴健康，可疊在既有 import/call graph 上）。
+- **第一層｜低成本、痛點已在發生**：6（暗區，基礎設施已備）、16（無障礙——見下方增刪理由，`flashAnimations: false` 時 error/passing 已實測只剩顏色差異，屬未達成的 PROMPT 約束而非純強化）。〔15、18、19 已完成〕
+- **第二層｜放大既有投資**：14（獨立檢視器——`tools/preview/` 已證明畫布可脫離 VS Code）、13（測試事件序列）、7（依賴健康，可疊在既有 import/call graph 上）。
 - **第三層｜需要研究或跨模組重投入**：1（即時追蹤）、8（效能映射）、3（Git 回放）、9（畫布派工）、10（戰情室）、12（3D 復活）；2（更多語言）與 11（AI 摘要）視實際需求插入。
 
 ## 增刪理由
@@ -43,5 +45,6 @@ extension＋原生 DOM/SVG 架構估算：低（數天）、中（約 1–3 週�
 - 新增第 17 項，因 Phase 5 的 `agent_report` active detail 目前只存於開啟中的 2D runtime；這是刻意維持首版小範圍，但值得在後續補上可靠性。
 - 新增第 18 項，因 `codefold.openOnStartup`（commit `888c0af`）為了讓不熟命令面板的使用者能直接看到畫布而加入 `onStartupFinished`，副作用是掛勾端點在設定關閉時仍會常駐。該副作用先前只記錄在 commit 訊息中，未進 roadmap，於本次檢查補上。
 - 第 6 與第 15 項的難度標示於本次檢查調整：前者因 Phase 4 已備妥 coverage 映射而下修為「低」，後者補註其為現存缺陷而非未來強化。
+- 2026-07-30 檢查：第 15 項已修復（`renderPreviewHtml` 純函式化），並新增第 19 項後一併修復（`preview:verify` 跨平台）。第 16 項依 `preview:verify` 的實測數據從第二層提到第一層——它不是錦上添花的強化，而是 PROMPT.md「色盲友善」約束目前未達成；修法涉及形狀/圖示的視覺選擇，且 PROMPT 明訂「不得新增與四大狀態色混淆的顏色」，因此保留給人類定調而未逕行實作。
 - 未把 TS/JS/Python 以外語言、多機人類協作、Git 回放、即時 tracer 或 3D 狀態流偷偷納入 Phase 5；它們仍維持非目標／後續候選。
 

@@ -34,4 +34,22 @@ Phase 5 可用 `agent-report` 核對代理回報的紅色節點與歸屬，
 錯誤 token（Phase 2 驗收 6）沒有畫布呈現，仍由
 `tests/hookServer.test.ts` 驗證。
 
-`index.html` 是從 `src/extension.ts` 自動生成，請勿手動編輯。
+## 自動驗收
+
+```powershell
+npm run build
+npm run preview:verify
+```
+
+會以無頭瀏覽器逐一開啟上述 23 個情境，比對 DOM 與計算後的 CSS，並斷言各群組的
+`transform` 在所有情境間完全一致（佈局穩定性）。瀏覽器依平台自動尋找
+Chrome / Chromium / Edge 的安裝路徑與 `PATH`；若找不到或想指定版本，用
+`CODEFOLD_PREVIEW_BROWSER` 指向執行檔絕對路徑：
+
+```bash
+CODEFOLD_PREVIEW_BROWSER=/opt/chromium/chrome npm run preview:verify
+```
+
+`index.html` 是從 `src/extension.ts` 自動生成，請勿手動編輯。產生它的轉換邏輯是
+`tools/preview/build.mjs` 的純函式 `renderPreviewHtml()`，`tests/previewHarness.test.ts`
+直接呼叫它，因此跑測試前不需要先 build。

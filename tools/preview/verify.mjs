@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, constants, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -120,23 +120,80 @@ try {
 }
 
 async function findBrowser() {
-  const candidates = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
-  ];
-  for (const candidate of candidates) {
-    try {
-      await readFile(candidate);
+  const override = process.env.CODEFOLD_PREVIEW_BROWSER;
+  if (override) {
+    if (await isExecutable(override)) {
+      return override;
+    }
+    throw new Error(
+      `CODEFOLD_PREVIEW_BROWSER is set to ${override}, but no executable is readable there.`
+    );
+  }
+  for (const candidate of browserCandidates()) {
+    if (await isExecutable(candidate)) {
       return candidate;
-    } catch (error) {
-      if (!isMissing(error)) {
-        throw error;
-      }
     }
   }
-  throw new Error('Could not find Microsoft Edge or Google Chrome for preview verification.');
+  throw new Error(
+    'Could not find Chrome, Chromium, or Edge for preview verification on '
+    + `${process.platform}. Install one of them, or set CODEFOLD_PREVIEW_BROWSER `
+    + 'to the absolute path of a Chromium-based executable.'
+  );
+}
+
+function browserCandidates() {
+  if (process.platform === 'win32') {
+    return [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
+    ];
+  }
+  if (process.platform === 'darwin') {
+    return [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      ...executablesOnPath(['google-chrome', 'chromium'])
+    ];
+  }
+  return [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/microsoft-edge',
+    '/snap/bin/chromium',
+    ...executablesOnPath([
+      'google-chrome',
+      'google-chrome-stable',
+      'chromium',
+      'chromium-browser',
+      'microsoft-edge'
+    ])
+  ];
+}
+
+function executablesOnPath(names) {
+  return (process.env.PATH ?? '')
+    .split(path.delimiter)
+    .filter(Boolean)
+    .flatMap((entry) => names.map((name) => path.join(entry, name)));
+}
+
+async function isExecutable(candidate) {
+  try {
+    // X_OK falls back to an existence check on Windows, which is what we want
+    // there — the candidate list is already made of concrete .exe paths.
+    await access(candidate, constants.X_OK);
+    return true;
+  } catch (error) {
+    if (isMissing(error) || error?.code === 'EACCES' || error?.code === 'ENOTDIR') {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function startPreviewServer() {
