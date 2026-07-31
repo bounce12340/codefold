@@ -12,6 +12,13 @@ export async function buildPreviewHarness(rootDirectory = defaultRoot) {
   const extensionPath = path.join(rootDirectory, 'src', 'extension.ts');
   const outputPath = path.join(rootDirectory, 'tools', 'preview', 'index.html');
   const extensionSource = await readFile(extensionPath, 'utf8');
+  await writeFile(outputPath, renderPreviewHtml(extensionSource), 'utf8');
+  return outputPath;
+}
+
+// Kept separate from the file write so tests can assert on the exact bytes the
+// build emits without needing a prior build, and without touching index.html.
+export function renderPreviewHtml(extensionSource) {
   const template = extract2dTemplate(extensionSource);
   const placeholders = [...template.matchAll(/\$\{([A-Za-z_$][\w$]*)\}/g)]
     .map((match) => match[1]);
@@ -38,13 +45,8 @@ export async function buildPreviewHarness(rootDirectory = defaultRoot) {
     `<script nonce="${nonce}" src="${previewScriptUri}"></script>\n  ${productTag}`
   );
   html = html.replace('<title>CodeFold</title>', '<title>CodeFold Preview</title>');
-  await writeFile(
-    outputPath,
-    '<!-- Generated from src/extension.ts by tools/preview/build.mjs. Do not hand-edit. -->\n'
-      + html,
-    'utf8'
-  );
-  return outputPath;
+  return '<!-- Generated from src/extension.ts by tools/preview/build.mjs. Do not hand-edit. -->\n'
+    + html;
 }
 
 export function extract2dTemplate(extensionSource) {
