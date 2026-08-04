@@ -23,7 +23,9 @@ ROADMAP 第 6 項可用 `coverage-gap` 核對測試盲點暗區——該情境�
 維持同一個 error 狀態，因此畫面上唯一的差異就是覆蓋率 overlay 本身。
 ROADMAP 第 7 項可用 `dependency-health` 核對 import 循環：該情境在既有的
 `canvas.ts → edges.ts` 之外補一條反向邊構成真實循環，畫面上同時存在多條
-單向 import 邊，因此可確認只有成環的那兩條被標記。
+單向 import 邊，因此可確認只有成環的那兩條被標記。該對檔案分屬 `src` 與
+`lib`，所以同一個情境也涵蓋群組層——群組卡片標 `↺`、側欄同時列出檔案層
+與資料夾層的環。
 例如直接開啟：
 
 - `http://127.0.0.1:4173/tools/preview/?scenario=verifying`

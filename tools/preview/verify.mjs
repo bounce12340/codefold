@@ -75,9 +75,13 @@ try {
         `${scenarioId}: browser exited ${browserResult.exitCode}: ${browserResult.stderr}`
       );
     }
+    // An uncaught exception is logged at INFO severity with the type glued to
+    // the word Error ("Uncaught TypeError: ..."), so a \berror\b match misses it
+    // and a broken canvas can pass as long as the scenario expects few nodes.
     const browserErrors = browserResult.stderr
       .split(/\r?\n/)
-      .filter((line) => /\bCONSOLE\b.*\b(error|assert)\b/i.test(line));
+      .filter((line) => /\bCONSOLE\b/i.test(line)
+        && /\berror\b|\bassert\b|Uncaught|[A-Za-z]*Error:/i.test(line));
     assert(browserErrors.length === 0, `${scenarioId}: console errors: ${browserErrors}`);
     const summary = summarizeDom(browserResult.stdout);
     assertScenario(summary);
@@ -683,6 +687,18 @@ function assertScenario(summary) {
       assert(
         health.cycleLabels.every((label) => label.includes('in an import cycle')),
         `cycle cards do not announce the cycle: ${JSON.stringify(health.cycleLabels)}`
+      );
+      assert(
+        health.cycleGroups === 2,
+        `expected 2 groups marked as cyclic, got ${health.cycleGroups}`
+      );
+      assert(
+        health.plainGroups > 0,
+        'every group was marked cyclic, so the folder marking proves nothing'
+      );
+      assert(
+        health.cycleText.includes('Folder cycle: src \u2192 lib \u2192 src'),
+        `folder cycle path is missing or not rotated to the selection: ${health.cycleText}`
       );
       break;
     }

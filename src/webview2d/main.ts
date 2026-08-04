@@ -174,8 +174,10 @@ let testRunSnapshot: TestRunSnapshot = {
 };
 let uncoveredNodeIds = new Set<string>();
 let cyclicNodeIds = new Set<string>();
+let cyclicFolderIds = new Set<string>();
 let cyclicEdgeKeys = new Set<string>();
 let dependencyCycles: DependencyCycle[] = [];
+let folderDependencyCycles: DependencyCycle[] = [];
 let couplingByNode = new Map<string, DependencyCoupling>();
 const loadedFunctionFiles = new Set<string>();
 const loadingFunctionFiles = new Set<string>();
@@ -266,8 +268,12 @@ function renderGraph(nextGraph: WebviewGraph): void {
   // than on stateUpdate, and must be set before any card is built.
   const health = nextGraph.dependencyHealth;
   cyclicNodeIds = new Set(health.cyclicNodeIds);
-  cyclicEdgeKeys = new Set(health.cyclicEdgeKeys);
+  // Folder edge keys share the Set: aggregate edges between collapsed groups
+  // are keyed by folder id, so drawEdges() marks both layers with one lookup.
+  cyclicEdgeKeys = new Set([...health.cyclicEdgeKeys, ...health.cyclicFolderEdgeKeys]);
+  cyclicFolderIds = new Set(health.cyclicFolderIds);
   dependencyCycles = health.cycles;
+  folderDependencyCycles = health.folderCycles;
   couplingByNode = new Map(health.coupling.map((entry) => [entry.nodeId, entry]));
   const folderGroups = groupFilesByFolder(nextGraph.nodes);
   folderByFileId = mapFilesToFolders(folderGroups);
@@ -380,6 +386,7 @@ function createGroupView(
   const element = document.createElement('div');
   element.className = 'folder-group';
   element.dataset.groupId = folderGroup.id;
+  element.classList.toggle('dependency-cycle', cyclicFolderIds.has(folderGroup.id));
 
   const header = document.createElement('button');
   header.type = 'button';
@@ -1319,7 +1326,13 @@ function updateSelectedStateDetails(node: GraphNode): void {
 function renderSelectedDependencyHealth(nodeId: string): void {
   const coupling = couplingByNode.get(nodeId);
   const cycles = dependencyCycles.filter((cycle) => cycle.nodeIds.includes(nodeId));
-  if (!coupling && cycles.length === 0) {
+  // A file can sit outside any file-level cycle while its folder still takes
+  // part in one, so both layers are reported for the selected node.
+  const owningFolder = folderByFileId.get(nodeId);
+  const folderCycles = owningFolder === undefined
+    ? []
+    : folderDependencyCycles.filter((cycle) => cycle.nodeIds.includes(owningFolder));
+  if (!coupling && cycles.length === 0 && folderCycles.length === 0) {
     dependencyField.hidden = true;
     nodeCoupling.textContent = '';
     nodeCycles.replaceChildren();
@@ -1329,18 +1342,34 @@ function renderSelectedDependencyHealth(nodeId: string): void {
   nodeCoupling.textContent = coupling
     ? `Imported by ${coupling.fanIn}, imports ${coupling.fanOut}.`
     : 'No import edges.';
-  nodeCycles.replaceChildren(...cycles.map((cycle) => {
-    const item = document.createElement('li');
-    // Rotate the members so the selected file reads as the entry point, and
-    // repeat it at the end to make the loop explicit.
-    const start = cycle.nodeIds.indexOf(nodeId);
-    const ordered = [
-      ...cycle.nodeIds.slice(start),
-      ...cycle.nodeIds.slice(0, start)
-    ];
-    item.textContent = `Import cycle: ${[...ordered, ordered[0]].join(' \u2192 ')}`;
-    return item;
-  }));
+  nodeCycles.replaceChildren(
+    ...cycles.map((cycle) => cycleItem('Import cycle', cycle, nodeId)),
+    ...folderCycles.map((cycle) =>
+      cycleItem('Folder cycle', cycle, owningFolder ?? cycle.nodeIds[0], stripFolderId))
+  );
+}
+
+function cycleItem(
+  label: string,
+  cycle: DependencyCycle,
+  entry: string,
+  format: (id: string) => string = (id) => id
+): HTMLLIElement {
+  const item = document.createElement('li');
+  // Rotate the members so the selected node reads as the entry point, and
+  // repeat it at the end to make the loop explicit.
+  const start = Math.max(0, cycle.nodeIds.indexOf(entry));
+  const ordered = [
+    ...cycle.nodeIds.slice(start),
+    ...cycle.nodeIds.slice(0, start)
+  ];
+  item.textContent =
+    `${label}: ${[...ordered, ordered[0]].map(format).join(' \u2192 ')}`;
+  return item;
+}
+
+function stripFolderId(id: string): string {
+  return id.startsWith('folder:') ? id.slice('folder:'.length) : id;
 }
 
 function renderErrorSourceList(
@@ -2081,8 +2110,10 @@ function clearGraph(): void {
   };
   uncoveredNodeIds.clear();
   cyclicNodeIds.clear();
+  cyclicFolderIds.clear();
   cyclicEdgeKeys.clear();
   dependencyCycles = [];
+  folderDependencyCycles = [];
   couplingByNode.clear();
   loadedFunctionFiles.clear();
   loadingFunctionFiles.clear();

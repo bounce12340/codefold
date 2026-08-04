@@ -9,7 +9,7 @@ npm ci
 npm run typecheck            # tsc --noEmit — the only static gate; no linter is configured
 npm run build                # esbuild -> dist/ + copies tree-sitter wasm + regenerates the preview harness
 npm run watch                # same builds in watch mode
-npm test                     # vitest run (95 tests / 19 files)
+npm test                     # vitest run (100 tests / 19 files)
 npm run test:watch
 npx vitest run tests/imports.test.ts          # single file
 npx vitest run -t 'resolves relative imports'  # single test by name
@@ -77,7 +77,11 @@ Import cycles ride along too, but on the **graph** message rather than `stateUpd
 `analyzeDependencyHealth` (`graph/dependencyHealth.ts`) is static structure, computed once
 per scan. It runs Tarjan iteratively (a recursive one would nest once per file and hit the
 JS stack limit at `MAX_FILES`) and looks at **import edges only**: call edges recurse by
-design, so including them would report ordinary recursion as a defect.
+design, so including them would report ordinary recursion as a defect. The same edges are
+then collapsed onto folders and analysed again — the canvas starts fully collapsed, so a
+file-only marking would be invisible by default. Folder analysis counts **only edges that
+cross a folder boundary**; both layers share one set of edge keys, so `drawEdges()` marks
+them with a single lookup.
 
 Coverage dark zones are deliberately **not** a `NodeState`. `mapCoverageToNodes` returns
 `uncoveredNodeIds` alongside the covered ones, which rides to the webview on
