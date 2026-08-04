@@ -339,6 +339,54 @@ describe('Phase 2 webview DOM rendering', () => {
     expect(relit.getAttribute('aria-label')).not.toContain('not covered');
   });
 
+  it('marks import cycle members and spells the loop out in the sidebar', () => {
+    sendMessage({
+      type: 'graph',
+      graph: createGraph({
+        cycles: [{
+          id: 'cycle:lib/beta.ts|src/alpha.ts',
+          nodeIds: ['lib/beta.ts', 'src/alpha.ts']
+        }],
+        cyclicNodeIds: ['lib/beta.ts', 'src/alpha.ts'],
+        cyclicEdgeKeys: [
+          'src/alpha.ts\u0000lib/beta.ts',
+          'lib/beta.ts\u0000src/alpha.ts'
+        ],
+        coupling: [
+          { nodeId: 'src/alpha.ts', fanIn: 1, fanOut: 1 },
+          { nodeId: 'lib/beta.ts', fanIn: 1, fanOut: 1 }
+        ]
+      })
+    });
+    sendState([nodeState('src/alpha.ts', 'editing')]);
+
+    const card = requiredFileCard('src/alpha.ts');
+    expect(card.classList.contains('dependency-cycle')).toBe(true);
+    expect(card.getAttribute('aria-label')).toContain('in an import cycle');
+
+    card.click();
+
+    const field = document.getElementById('dependency-field') as HTMLDivElement;
+    const cycles = document.getElementById('node-cycles') as HTMLUListElement;
+    expect(field.hidden).toBe(false);
+    expect(document.getElementById('node-coupling')?.textContent)
+      .toBe('Imported by 1, imports 1.');
+    // The selected file leads and repeats at the end, so the loop is explicit.
+    expect(cycles.textContent)
+      .toContain('src/alpha.ts → lib/beta.ts → src/alpha.ts');
+  });
+
+  it('hides the dependency field for a file with no import edges', () => {
+    sendMessage({ type: 'graph', graph: createGraph() });
+    sendState([nodeState('src/alpha.ts', 'editing')]);
+    requiredFileCard('src/alpha.ts').click();
+
+    const field = document.getElementById('dependency-field') as HTMLDivElement;
+    expect(field.hidden).toBe(true);
+    expect(requiredFileCard('src/alpha.ts').classList.contains('dependency-cycle'))
+      .toBe(false);
+  });
+
   it('carries node state in the card label rather than colour alone', () => {
     sendState([nodeState('src/alpha.ts', 'error', [], ['test', 'agent'])]);
 
@@ -458,7 +506,7 @@ describe('Phase 2 webview DOM rendering', () => {
   });
 });
 
-function createGraph(): WebviewGraph {
+function createGraph(health?: WebviewGraph['dependencyHealth']): WebviewGraph {
   const nodes = [
     fileNode('src/alpha.ts', 'alpha.ts'),
     fileNode('lib/beta.ts', 'beta.ts')
@@ -466,6 +514,12 @@ function createGraph(): WebviewGraph {
   return {
     nodes,
     edges: [],
+    dependencyHealth: health ?? {
+      cycles: [],
+      cyclicNodeIds: [],
+      cyclicEdgeKeys: [],
+      coupling: []
+    },
     seed: 42,
     truncated: false,
     totalFiles: nodes.length,
@@ -698,6 +752,10 @@ function webviewShell(): string {
     </div>
     <div id="agent-report-field" hidden>
       <ul id="node-agent-reports"></ul>
+    </div>
+    <div id="dependency-field" hidden>
+      <p id="node-coupling"></p>
+      <ul id="node-cycles"></ul>
     </div>
     <div id="node-conflict"></div>
     <p id="auto-annotation"></p>

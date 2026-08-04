@@ -9,12 +9,12 @@ npm ci
 npm run typecheck            # tsc --noEmit — the only static gate; no linter is configured
 npm run build                # esbuild -> dist/ + copies tree-sitter wasm + regenerates the preview harness
 npm run watch                # same builds in watch mode
-npm test                     # vitest run (86 tests / 18 files)
+npm test                     # vitest run (95 tests / 19 files)
 npm run test:watch
 npx vitest run tests/imports.test.ts          # single file
 npx vitest run -t 'resolves relative imports'  # single test by name
 npm run preview              # static server for the browser harness at http://127.0.0.1:4173/tools/preview/
-npm run preview:verify       # 25 headless scenarios, asserts DOM/CSS invariants
+npm run preview:verify       # 26 headless scenarios, asserts DOM/CSS invariants
 ```
 
 `npm test` does not require a prior build. `tests/previewHarness.test.ts` calls
@@ -72,6 +72,12 @@ Red has four sources that coexist on the same node, each owned by exactly one tr
 Clearing one source must never clear the others — that is what `clearError(ids, source)`
 and `replaceErrorSource(source, activeIds)` exist for. Human edits debounce to `dirty`
 after `EDITING_DEBOUNCE_MS` (2s).
+
+Import cycles ride along too, but on the **graph** message rather than `stateUpdate` —
+`analyzeDependencyHealth` (`graph/dependencyHealth.ts`) is static structure, computed once
+per scan. It runs Tarjan iteratively (a recursive one would nest once per file and hit the
+JS stack limit at `MAX_FILES`) and looks at **import edges only**: call edges recurse by
+design, so including them would report ordinary recursion as a defect.
 
 Coverage dark zones are deliberately **not** a `NodeState`. `mapCoverageToNodes` returns
 `uncoveredNodeIds` alongside the covered ones, which rides to the webview on
