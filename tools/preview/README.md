@@ -21,6 +21,9 @@ Phase 5 可用 `agent-report` 核對代理回報的紅色節點與歸屬，
 `multi-agent-lifecycle` 核對主代理與 subagent 的階層、徽章及完成後清除。
 ROADMAP 第 6 項可用 `coverage-gap` 核對測試盲點暗區——該情境刻意讓所有卡片
 維持同一個 error 狀態，因此畫面上唯一的差異就是覆蓋率 overlay 本身。
+ROADMAP 第 7 項可用 `dependency-health` 核對 import 循環：該情境在既有的
+`canvas.ts → edges.ts` 之外補一條反向邊構成真實循環，畫面上同時存在多條
+單向 import 邊，因此可確認只有成環的那兩條被標記。
 例如直接開啟：
 
 - `http://127.0.0.1:4173/tools/preview/?scenario=verifying`
@@ -33,6 +36,7 @@ ROADMAP 第 6 項可用 `coverage-gap` 核對測試盲點暗區——該情境�
 - `http://127.0.0.1:4173/tools/preview/?scenario=multi-agent-lifecycle&step=active`
 - `http://127.0.0.1:4173/tools/preview/?scenario=multi-agent-lifecycle&step=done`
 - `http://127.0.0.1:4173/tools/preview/?scenario=coverage-gap`
+- `http://127.0.0.1:4173/tools/preview/?scenario=dependency-health`
 
 錯誤 token（Phase 2 驗收 6）沒有畫布呈現，仍由
 `tests/hookServer.test.ts` 驗證。
@@ -44,7 +48,7 @@ npm run build
 npm run preview:verify
 ```
 
-會以無頭瀏覽器逐一開啟上述 25 個情境，比對 DOM 與計算後的 CSS，並斷言各群組的
+會以無頭瀏覽器逐一開啟上述 26 個情境，比對 DOM 與計算後的 CSS，並斷言各群組的
 `transform` 在所有情境間完全一致（佈局穩定性）。其中 `assertDistinctShapes()`
 以「與顏色無關的狀態燈簽章」斷言各狀態形狀互異，包含 `flashAnimations: false`
 時的 editing/error/passing——那正是色盲友善約束先前失效的場景。瀏覽器依平台自動尋找

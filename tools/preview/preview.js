@@ -24,7 +24,8 @@
     'all-error-sources',
     'status-bar-summary',
     'multi-agent-lifecycle',
-    'coverage-gap'
+    'coverage-gap',
+    'dependency-health'
   ];
   const scenarios = {
     clean: {
@@ -204,6 +205,33 @@
             ]
           )
         );
+      }
+    },
+    'dependency-health': {
+      label: 'Import cycle',
+      acceptance: 'ROADMAP 7 — cycle members and the edges that close the loop',
+      run: () => {
+        // canvas.ts -> edges.ts already exists in the fixture; adding the
+        // reverse edge closes a real two-file cycle across two folders.
+        const cycleMembers = ['lib/graph/edges.ts', 'src/ui/canvas.ts'];
+        sendGraph(['src', 'lib'], {
+          extraEdges: [edge('lib/graph/edges.ts', 'src/ui/canvas.ts', 'import')],
+          dependencyHealth: {
+            cycles: [{ id: `cycle:${cycleMembers.join('|')}`, nodeIds: cycleMembers }],
+            cyclicNodeIds: cycleMembers,
+            cyclicEdgeKeys: [
+              cycleEdgeKey('lib/graph/edges.ts', 'src/ui/canvas.ts'),
+              cycleEdgeKey('src/ui/canvas.ts', 'lib/graph/edges.ts')
+            ],
+            coupling: [
+              { nodeId: 'src/ui/canvas.ts', fanIn: 2, fanOut: 1 },
+              { nodeId: 'lib/graph/edges.ts', fanIn: 2, fanOut: 1 },
+              { nodeId: 'src/ui/panel.ts', fanIn: 2, fanOut: 2 }
+            ]
+          }
+        });
+        sendState([fileUpdate('src/ui/canvas.ts', 'idle')]);
+        selectNodeLater('src/ui/canvas.ts');
       }
     },
     'test-failure': {
@@ -840,6 +868,24 @@
       gapLabels: gapCards.map((card) => card.getAttribute('aria-label') || '')
     };
 
+    const cycleEdges = Array.from(document.querySelectorAll('.dependency.cycle'));
+    const plainImportEdges = Array.from(
+      document.querySelectorAll('.dependency.import:not(.cycle)')
+    );
+    const cycleCards = Array.from(document.querySelectorAll('.dependency-cycle'));
+    const dependency = {
+      cycleEdges: cycleEdges.length,
+      plainImportEdges: plainImportEdges.length,
+      cycleCards: cycleCards.length,
+      cycleDash: cycleEdges[0] ? getComputedStyle(cycleEdges[0]).strokeDasharray : '',
+      plainDash: plainImportEdges[0]
+        ? getComputedStyle(plainImportEdges[0]).strokeDasharray
+        : '',
+      couplingText: document.getElementById('node-coupling')?.textContent || '',
+      cycleText: document.getElementById('node-cycles')?.textContent || '',
+      cycleLabels: cycleCards.map((card) => card.getAttribute('aria-label') || '')
+    };
+
     const parent = document.querySelector(
       '.file-card[data-node-id="src/ui/panel.ts"]'
     );
@@ -854,6 +900,7 @@
       theme: document.documentElement.dataset.previewTheme || '',
       stateCards,
       coverage,
+      dependency,
       functions: {
         ownerLabels: functions.map((card) =>
           card.querySelector('.function-owner')?.textContent || ''
@@ -908,10 +955,10 @@
     history.replaceState(null, '', `${window.location.pathname}?${parameters}`);
   }
 
-  function sendGraph(expandedFolders = []) {
+  function sendGraph(expandedFolders = [], options = {}) {
     window.postMessage({
       type: 'graph',
-      graph: createGraph(expandedFolders)
+      graph: createGraph(expandedFolders, options)
     }, '*');
   }
 
@@ -970,7 +1017,7 @@
     }, '*');
   }
 
-  function createGraph(expandedFolders) {
+  function createGraph(expandedFolders, options = {}) {
     const nodes = createFiles();
     const functionNodes = createFunctionNodes();
     const functionCounts = {};
@@ -980,7 +1027,13 @@
     const expanded = new Set(expandedFolders);
     return {
       nodes,
-      edges: createImportEdges(),
+      edges: [...createImportEdges(), ...(options.extraEdges || [])],
+      dependencyHealth: options.dependencyHealth || {
+        cycles: [],
+        cyclicNodeIds: [],
+        cyclicEdgeKeys: [],
+        coupling: []
+      },
       seed: 0x5eed1234,
       truncated: false,
       totalFiles: nodes.length,
@@ -1015,6 +1068,11 @@
       file('tests/integration/harness.test.ts', 'Exercises the browser preview scenarios.'),
       file('tests/unit/state.test.ts', 'Verifies editing, dirty, passing, and error states.')
     ];
+  }
+
+  // Must match edgeKey() in the product webview, which joins with NUL.
+  function cycleEdgeKey(from, to) {
+    return `${from}\u0000${to}`;
   }
 
   function createImportEdges() {

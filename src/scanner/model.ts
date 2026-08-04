@@ -130,6 +130,24 @@ export interface SourceFile {
   content: string;
 }
 
+export interface DependencyCycle {
+  id: string;
+  nodeIds: string[];
+}
+
+export interface DependencyCoupling {
+  nodeId: string;
+  fanIn: number;
+  fanOut: number;
+}
+
+export interface DependencyHealth {
+  cycles: DependencyCycle[];
+  cyclicNodeIds: string[];
+  cyclicEdgeKeys: string[];
+  coupling: DependencyCoupling[];
+}
+
 export interface WebviewGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -139,6 +157,7 @@ export interface WebviewGraph {
   totalFunctions: number;
   functionCounts: Record<string, number>;
   layout: WorkspaceLayout;
+  dependencyHealth: DependencyHealth;
 }
 
 export interface FunctionGraphPayload {

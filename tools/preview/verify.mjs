@@ -40,7 +40,8 @@ try {
     ['multi-agent-lifecycle', 'dark', 'active'],
     ['multi-agent-lifecycle', 'dark', 'done'],
     ['coverage-gap', 'dark'],
-    ['coverage-gap', 'light']
+    ['coverage-gap', 'light'],
+    ['dependency-health', 'dark']
   ];
   const results = [];
   let baselinePositions;
@@ -652,6 +653,36 @@ function assertScenario(summary) {
         coverage.gapLabels.length === 2
         && coverage.gapLabels.every((label) => label.includes('not covered by tests')),
         `dark-zone cards do not announce the gap: ${JSON.stringify(coverage.gapLabels)}`
+      );
+      break;
+    }
+    case 'dependency-health': {
+      const health = summary.metrics.dependency;
+      assert(health.cycleEdges === 2, `expected 2 cycle edges, got ${health.cycleEdges}`);
+      assert(health.cycleCards === 2, `expected 2 cycle cards, got ${health.cycleCards}`);
+      // Only the edges that close the loop may be marked; the fixture has many
+      // other one-way imports on screen.
+      assert(
+        health.plainImportEdges > 0,
+        'no acyclic import edge remained, so the cycle marking proves nothing'
+      );
+      assert(
+        health.cycleDash !== health.plainDash,
+        `cycle edges are not dashed differently (${health.cycleDash} vs ${health.plainDash})`
+      );
+      assert(
+        health.couplingText === 'Imported by 2, imports 1.',
+        `coupling summary is wrong: ${health.couplingText}`
+      );
+      assert(
+        health.cycleText.includes(
+          'src/ui/canvas.ts \u2192 lib/graph/edges.ts \u2192 src/ui/canvas.ts'
+        ),
+        `cycle path does not start and end at the selected file: ${health.cycleText}`
+      );
+      assert(
+        health.cycleLabels.every((label) => label.includes('in an import cycle')),
+        `cycle cards do not announce the cycle: ${JSON.stringify(health.cycleLabels)}`
       );
       break;
     }

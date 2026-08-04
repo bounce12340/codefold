@@ -16,6 +16,8 @@ import {
 import type {
   AgentReportDetail,
   AgentSnapshot,
+  DependencyCoupling,
+  DependencyCycle,
   FunctionGraphPayload,
   GraphEdge,
   GraphNode,
@@ -139,6 +141,9 @@ const nodeTestFailures = requireElement<HTMLUListElement>('node-test-failures');
 const agentReportField = requireElement<HTMLDivElement>('agent-report-field');
 const nodeAgentReports = requireElement<HTMLUListElement>('node-agent-reports');
 const nodeConflict = requireElement<HTMLDivElement>('node-conflict');
+const dependencyField = requireElement<HTMLDivElement>('dependency-field');
+const nodeCoupling = requireElement<HTMLParagraphElement>('node-coupling');
+const nodeCycles = requireElement<HTMLUListElement>('node-cycles');
 const autoAnnotation = requireElement<HTMLParagraphElement>('auto-annotation');
 const manualAnnotation = requireElement<HTMLTextAreaElement>('manual-annotation');
 const saveAnnotationButton = requireElement<HTMLButtonElement>('save-annotation');
@@ -168,6 +173,10 @@ let testRunSnapshot: TestRunSnapshot = {
   uncovered: []
 };
 let uncoveredNodeIds = new Set<string>();
+let cyclicNodeIds = new Set<string>();
+let cyclicEdgeKeys = new Set<string>();
+let dependencyCycles: DependencyCycle[] = [];
+let couplingByNode = new Map<string, DependencyCoupling>();
 const loadedFunctionFiles = new Set<string>();
 const loadingFunctionFiles = new Set<string>();
 const expandedFunctionFiles = new Set<string>();
@@ -253,6 +262,13 @@ function receiveExtensionMessage(event: MessageEvent<unknown>): void {
 function renderGraph(nextGraph: WebviewGraph): void {
   graph = nextGraph;
   clearGraph();
+  // Dependency health is static structure, so it arrives with the graph rather
+  // than on stateUpdate, and must be set before any card is built.
+  const health = nextGraph.dependencyHealth;
+  cyclicNodeIds = new Set(health.cyclicNodeIds);
+  cyclicEdgeKeys = new Set(health.cyclicEdgeKeys);
+  dependencyCycles = health.cycles;
+  couplingByNode = new Map(health.coupling.map((entry) => [entry.nodeId, entry]));
   const folderGroups = groupFilesByFolder(nextGraph.nodes);
   folderByFileId = mapFilesToFolders(folderGroups);
   fileById = new Map(nextGraph.nodes.map((node) => [node.id, node]));
@@ -1093,6 +1109,7 @@ function applyNodePresentation(card: HTMLElement, node: GraphNode): void {
   }
   card.classList.toggle('node-conflict', hasAgentConflict(node));
   card.classList.toggle('coverage-gap', uncoveredNodeIds.has(node.id));
+  card.classList.toggle('dependency-cycle', cyclicNodeIds.has(node.id));
   card.dataset.state = node.state;
   const lamp = card.querySelector<HTMLElement>('.node-state-lamp');
   if (lamp) {
@@ -1106,9 +1123,10 @@ function applyNodePresentation(card: HTMLElement, node: GraphNode): void {
     ? ` via ${node.errorSources.join(', ')}`
     : '';
   const coverageDetail = uncoveredNodeIds.has(node.id) ? ', not covered by tests' : '';
+  const cycleDetail = cyclicNodeIds.has(node.id) ? ', in an import cycle' : '';
   card.setAttribute(
     'aria-label',
-    `${baseLabel}, state ${node.state}${errorDetail}${coverageDetail}`
+    `${baseLabel}, state ${node.state}${errorDetail}${coverageDetail}${cycleDetail}`
   );
   const badges = card.querySelector<HTMLElement>('.agent-badges');
   if (!badges) {
@@ -1294,7 +1312,35 @@ function updateSelectedStateDetails(node: GraphNode): void {
   renderSelectedDiagnostics(node.id);
   renderSelectedTestFailures(node.id);
   renderSelectedAgentReports(node.id);
+  renderSelectedDependencyHealth(node.id);
   nodeConflict.hidden = !hasAgentConflict(node);
+}
+
+function renderSelectedDependencyHealth(nodeId: string): void {
+  const coupling = couplingByNode.get(nodeId);
+  const cycles = dependencyCycles.filter((cycle) => cycle.nodeIds.includes(nodeId));
+  if (!coupling && cycles.length === 0) {
+    dependencyField.hidden = true;
+    nodeCoupling.textContent = '';
+    nodeCycles.replaceChildren();
+    return;
+  }
+  dependencyField.hidden = false;
+  nodeCoupling.textContent = coupling
+    ? `Imported by ${coupling.fanIn}, imports ${coupling.fanOut}.`
+    : 'No import edges.';
+  nodeCycles.replaceChildren(...cycles.map((cycle) => {
+    const item = document.createElement('li');
+    // Rotate the members so the selected file reads as the entry point, and
+    // repeat it at the end to make the loop explicit.
+    const start = cycle.nodeIds.indexOf(nodeId);
+    const ordered = [
+      ...cycle.nodeIds.slice(start),
+      ...cycle.nodeIds.slice(0, start)
+    ];
+    item.textContent = `Import cycle: ${[...ordered, ordered[0]].join(' \u2192 ')}`;
+    return item;
+  }));
 }
 
 function renderErrorSourceList(
@@ -1620,7 +1666,8 @@ function drawEdges(): void {
         'dependency',
         visibleEdge.kind,
         visibleEdge.kind === 'import' ? '' : 'phase1-edge',
-        visibleEdge.count > 1 ? 'aggregate' : ''
+        visibleEdge.count > 1 ? 'aggregate' : '',
+        cyclicEdgeKeys.has(edgeKey(visibleEdge.from, visibleEdge.to)) ? 'cycle' : ''
       ].filter(Boolean).join(' ')
     );
     path.setAttribute('marker-end', 'url(#dependency-arrow)');
@@ -2033,6 +2080,10 @@ function clearGraph(): void {
     uncovered: []
   };
   uncoveredNodeIds.clear();
+  cyclicNodeIds.clear();
+  cyclicEdgeKeys.clear();
+  dependencyCycles = [];
+  couplingByNode.clear();
   loadedFunctionFiles.clear();
   loadingFunctionFiles.clear();
   expandedFunctionFiles.clear();

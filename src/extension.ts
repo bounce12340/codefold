@@ -8,6 +8,7 @@ import type {
   WebviewGraph,
   WorkspaceLayout
 } from './scanner/model';
+import { analyzeDependencyHealth } from './graph/dependencyHealth';
 import { AgentRegistry } from './agents/agentRegistry';
 import { AgentReportTracker } from './agents/agentReportTracker';
 import type { AgentHookEvent } from './agents/events';
@@ -634,6 +635,13 @@ async function scanWorkspace(
       + 'keeping the file layer as the default and supplying functions only on expansion.'
     );
   }
+  const dependencyHealth = analyzeDependencyHealth(visibleNodes, visibleEdges);
+  if (dependencyHealth.cycles.length > 0) {
+    output.appendLine(
+      `Dependency health: ${dependencyHealth.cycles.length} import cycle(s) across `
+      + `${dependencyHealth.cyclicNodeIds.length} file(s).`
+    );
+  }
   const seed = hashStrings([
     ...visibleNodes.map((node) => node.id),
     ...visibleEdges.map((edge) => `${edge.from}->${edge.to}`)
@@ -647,7 +655,8 @@ async function scanWorkspace(
       totalFiles,
       totalFunctions: visibleFunctionNodes.length,
       functionCounts,
-      layout
+      layout,
+      dependencyHealth
     },
     functionNodes: visibleFunctionNodes,
     functionEdges: visibleFunctionEdges,
@@ -1457,6 +1466,20 @@ function get2dWebviewHtml(
     .file-card.node-conflict, .function-card.node-conflict {
       outline: 2px dotted var(--vscode-foreground); outline-offset: 2px;
     }
+    /* Import cycle: a structural property, not a node state, so it stays out
+       of the four status colours and is drawn on the edge that closes it. */
+    .dependency.cycle {
+      stroke: var(--vscode-foreground);
+      stroke-dasharray: 7 4;
+      opacity: .9;
+    }
+    .file-card.dependency-cycle .file-name::after {
+      content: " \\21ba";
+      font-weight: 700;
+      opacity: .85;
+    }
+    #node-cycles { margin: 6px 0 0; padding-left: 17px; }
+    #node-cycles li { margin: 3px 0; font-size: 12px; overflow-wrap: anywhere; }
     /* Coverage dark zone: instrumented but never executed. Dimming plus a
        dashed edge, so it reads as "unlit" without adding a fifth status colour
        and without overriding whatever state the node is actually in. */
@@ -1889,6 +1912,11 @@ function get2dWebviewHtml(
       <div id="agent-report-field" class="field" hidden>
         <span class="field-label">Agent reports</span>
         <ul id="node-agent-reports"></ul>
+      </div>
+      <div id="dependency-field" class="field" hidden>
+        <span class="field-label">Dependency health</span>
+        <p id="node-coupling" class="field-value"></p>
+        <ul id="node-cycles"></ul>
       </div>
       <div id="node-conflict" class="field" hidden>Potential conflict: multiple agents are editing this node.</div>
       <div class="field">
