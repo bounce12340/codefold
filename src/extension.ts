@@ -1473,7 +1473,8 @@ function get2dWebviewHtml(
       stroke-dasharray: 7 4;
       opacity: .9;
     }
-    .file-card.dependency-cycle .file-name::after {
+    .file-card.dependency-cycle .file-name::after,
+    .folder-group.dependency-cycle .folder-name::after {
       content: " \\21ba";
       font-weight: 700;
       opacity: .85;

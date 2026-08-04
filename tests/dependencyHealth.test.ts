@@ -105,6 +105,65 @@ describe('dependency health', () => {
     expect(health.coupling).toEqual([]);
   });
 
+  it('collapses a cross-folder cycle onto the folders that close it', () => {
+    const health = analyzeDependencyHealth(
+      files(['src/ui/canvas.ts', 'lib/graph/edges.ts', 'src/index.ts']),
+      [
+        importEdge('src/ui/canvas.ts', 'lib/graph/edges.ts'),
+        importEdge('lib/graph/edges.ts', 'src/ui/canvas.ts'),
+        importEdge('src/index.ts', 'src/ui/canvas.ts')
+      ]
+    );
+
+    expect(health.folderCycles).toEqual([
+      { id: 'cycle:folder:lib|folder:src', nodeIds: ['folder:lib', 'folder:src'] }
+    ]);
+    expect(health.cyclicFolderIds).toEqual(['folder:lib', 'folder:src']);
+    expect(health.cyclicFolderEdgeKeys).toEqual([
+      edgeKey('folder:lib', 'folder:src'),
+      edgeKey('folder:src', 'folder:lib')
+    ]);
+  });
+
+  it('does not report a folder cycle for a cycle contained in one folder', () => {
+    const health = analyzeDependencyHealth(
+      files(['src/a.ts', 'src/b.ts']),
+      [importEdge('src/a.ts', 'src/b.ts'), importEdge('src/b.ts', 'src/a.ts')]
+    );
+
+    // The file-level cycle is real; collapsing it would make folder:src look
+    // like it depends on itself, which says nothing about module boundaries.
+    expect(health.cycles).toHaveLength(1);
+    expect(health.folderCycles).toEqual([]);
+    expect(health.cyclicFolderIds).toEqual([]);
+  });
+
+  it('reports a folder cycle even when no single file pair is cyclic', () => {
+    const health = analyzeDependencyHealth(
+      files(['src/a.ts', 'src/b.ts', 'lib/x.ts']),
+      [
+        importEdge('src/a.ts', 'lib/x.ts'),
+        importEdge('lib/x.ts', 'src/b.ts')
+      ]
+    );
+
+    // No file imports itself back, but src and lib depend on each other — the
+    // boundary violation only exists at the folder level.
+    expect(health.cycles).toEqual([]);
+    expect(health.folderCycles.map((cycle) => cycle.nodeIds)).toEqual([
+      ['folder:lib', 'folder:src']
+    ]);
+  });
+
+  it('groups top-level files under the root folder', () => {
+    const health = analyzeDependencyHealth(
+      files(['index.ts', 'lib/x.ts']),
+      [importEdge('index.ts', 'lib/x.ts'), importEdge('lib/x.ts', 'index.ts')]
+    );
+
+    expect(health.folderCycles[0].nodeIds).toEqual(['folder:(root)', 'folder:lib']);
+  });
+
   it('handles a MAX_FILES-deep chain without exhausting the stack', () => {
     const ids = Array.from({ length: 2_000 }, (_, index) =>
       `src/file-${String(index).padStart(4, '0')}.ts`);

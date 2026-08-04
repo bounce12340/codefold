@@ -146,6 +146,10 @@ export interface DependencyHealth {
   cyclicNodeIds: string[];
   cyclicEdgeKeys: string[];
   coupling: DependencyCoupling[];
+  /** Same analysis collapsed onto folders, for the default collapsed view. */
+  folderCycles: DependencyCycle[];
+  cyclicFolderIds: string[];
+  cyclicFolderEdgeKeys: string[];
 }
 
 export interface WebviewGraph {

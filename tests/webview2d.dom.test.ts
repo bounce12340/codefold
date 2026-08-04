@@ -376,6 +376,40 @@ describe('Phase 2 webview DOM rendering', () => {
       .toContain('src/alpha.ts → lib/beta.ts → src/alpha.ts');
   });
 
+  it('marks a folder cycle on the collapsed group and in the sidebar', () => {
+    sendMessage({
+      type: 'graph',
+      graph: createGraph({
+        folderCycles: [{
+          id: 'cycle:folder:lib|folder:src',
+          nodeIds: ['folder:lib', 'folder:src']
+        }],
+        cyclicFolderIds: ['folder:lib', 'folder:src'],
+        cyclicFolderEdgeKeys: [
+          'folder:lib\u0000folder:src',
+          'folder:src\u0000folder:lib'
+        ],
+        coupling: [{ nodeId: 'src/alpha.ts', fanIn: 0, fanOut: 1 }]
+      })
+    });
+
+    // The default view is collapsed, which is exactly why the folder layer
+    // exists — no file card has been rendered at this point.
+    expect(group('src').classList.contains('expanded')).toBe(false);
+    expect(group('src').classList.contains('dependency-cycle')).toBe(true);
+    expect(group('lib').classList.contains('dependency-cycle')).toBe(true);
+
+    sendState([nodeState('src/alpha.ts', 'editing')]);
+    requiredFileCard('src/alpha.ts').click();
+
+    const cycles = document.getElementById('node-cycles') as HTMLUListElement;
+    // The file itself is in no file-level cycle; only its folder is.
+    expect(requiredFileCard('src/alpha.ts').classList.contains('dependency-cycle'))
+      .toBe(false);
+    expect(cycles.textContent).toContain('Folder cycle: src → lib → src');
+    expect(cycles.textContent).not.toContain('folder:');
+  });
+
   it('hides the dependency field for a file with no import edges', () => {
     sendMessage({ type: 'graph', graph: createGraph() });
     sendState([nodeState('src/alpha.ts', 'editing')]);
@@ -506,7 +540,21 @@ describe('Phase 2 webview DOM rendering', () => {
   });
 });
 
-function createGraph(health?: WebviewGraph['dependencyHealth']): WebviewGraph {
+function emptyDependencyHealth(): WebviewGraph['dependencyHealth'] {
+  return {
+    cycles: [],
+    cyclicNodeIds: [],
+    cyclicEdgeKeys: [],
+    coupling: [],
+    folderCycles: [],
+    cyclicFolderIds: [],
+    cyclicFolderEdgeKeys: []
+  };
+}
+
+function createGraph(
+  health?: Partial<WebviewGraph['dependencyHealth']>
+): WebviewGraph {
   const nodes = [
     fileNode('src/alpha.ts', 'alpha.ts'),
     fileNode('lib/beta.ts', 'beta.ts')
@@ -514,12 +562,7 @@ function createGraph(health?: WebviewGraph['dependencyHealth']): WebviewGraph {
   return {
     nodes,
     edges: [],
-    dependencyHealth: health ?? {
-      cycles: [],
-      cyclicNodeIds: [],
-      cyclicEdgeKeys: [],
-      coupling: []
-    },
+    dependencyHealth: { ...emptyDependencyHealth(), ...health },
     seed: 42,
     truncated: false,
     totalFiles: nodes.length,

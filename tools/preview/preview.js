@@ -223,6 +223,17 @@
               cycleEdgeKey('lib/graph/edges.ts', 'src/ui/canvas.ts'),
               cycleEdgeKey('src/ui/canvas.ts', 'lib/graph/edges.ts')
             ],
+            // The same two files live in different folders, so the boundary
+            // violation shows up at the folder layer as well.
+            folderCycles: [{
+              id: 'cycle:folder:lib|folder:src',
+              nodeIds: ['folder:lib', 'folder:src']
+            }],
+            cyclicFolderIds: ['folder:lib', 'folder:src'],
+            cyclicFolderEdgeKeys: [
+              cycleEdgeKey('folder:lib', 'folder:src'),
+              cycleEdgeKey('folder:src', 'folder:lib')
+            ],
             coupling: [
               { nodeId: 'src/ui/canvas.ts', fanIn: 2, fanOut: 1 },
               { nodeId: 'lib/graph/edges.ts', fanIn: 2, fanOut: 1 },
@@ -872,7 +883,9 @@
     const plainImportEdges = Array.from(
       document.querySelectorAll('.dependency.import:not(.cycle)')
     );
-    const cycleCards = Array.from(document.querySelectorAll('.dependency-cycle'));
+    const cycleCards = Array.from(document.querySelectorAll(
+      '.file-card.dependency-cycle, .function-card.dependency-cycle'
+    ));
     const dependency = {
       cycleEdges: cycleEdges.length,
       plainImportEdges: plainImportEdges.length,
@@ -881,6 +894,10 @@
       plainDash: plainImportEdges[0]
         ? getComputedStyle(plainImportEdges[0]).strokeDasharray
         : '',
+      cycleGroups: document.querySelectorAll('.folder-group.dependency-cycle').length,
+      plainGroups: document.querySelectorAll(
+        '.folder-group:not(.dependency-cycle)'
+      ).length,
       couplingText: document.getElementById('node-coupling')?.textContent || '',
       cycleText: document.getElementById('node-cycles')?.textContent || '',
       cycleLabels: cycleCards.map((card) => card.getAttribute('aria-label') || '')
@@ -1032,7 +1049,10 @@
         cycles: [],
         cyclicNodeIds: [],
         cyclicEdgeKeys: [],
-        coupling: []
+        coupling: [],
+        folderCycles: [],
+        cyclicFolderIds: [],
+        cyclicFolderEdgeKeys: []
       },
       seed: 0x5eed1234,
       truncated: false,

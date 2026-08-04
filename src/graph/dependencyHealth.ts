@@ -5,6 +5,7 @@ import type {
   GraphEdge,
   GraphNode
 } from '../scanner/model';
+import { folderId, folderKeyForPath } from './folders';
 
 // The shapes live in scanner/model.ts with the rest of the wire types. Defining
 // them here and importing them from there would create an import cycle between
@@ -98,11 +99,97 @@ export function analyzeDependencyHealth(
       || left.nodeId.localeCompare(right.nodeId)
     );
 
+  const folder = analyzeFolderLayer(files, outgoing);
+
   return {
     cycles,
     cyclicNodeIds: [...cyclicNodeIds].sort((left, right) => left.localeCompare(right)),
     cyclicEdgeKeys,
-    coupling
+    coupling,
+    ...folder
+  };
+}
+
+/**
+ * Folders are the default view — everything starts collapsed — so a cycle that
+ * is only marked on file cards is invisible until someone expands the right
+ * group. Collapsing the same import edges onto their folders surfaces it at the
+ * level the user actually looks at first.
+ *
+ * Only edges that cross a folder boundary count: a cycle wholly inside one
+ * folder is a file-level finding and would otherwise make its folder appear to
+ * depend on itself.
+ */
+function analyzeFolderLayer(
+  files: ReadonlySet<string>,
+  outgoing: ReadonlyMap<string, readonly string[]>
+): Pick<
+  DependencyHealth,
+  'folderCycles' | 'cyclicFolderIds' | 'cyclicFolderEdgeKeys'
+> {
+  const folderOf = new Map<string, string>();
+  for (const fileId of files) {
+    folderOf.set(fileId, folderId(folderKeyForPath(fileId)));
+  }
+
+  const folderOutgoing = new Map<string, Set<string>>();
+  for (const folder of folderOf.values()) {
+    if (!folderOutgoing.has(folder)) {
+      folderOutgoing.set(folder, new Set());
+    }
+  }
+  for (const [fileId, targets] of outgoing) {
+    const from = folderOf.get(fileId);
+    if (from === undefined) {
+      continue;
+    }
+    for (const target of targets) {
+      const to = folderOf.get(target);
+      if (to === undefined || to === from) {
+        continue;
+      }
+      folderOutgoing.get(from)?.add(to);
+    }
+  }
+
+  const adjacency = new Map<string, string[]>(
+    [...folderOutgoing].map(([from, targets]) => [
+      from,
+      [...targets].sort((left, right) => left.localeCompare(right))
+    ])
+  );
+  const components = stronglyConnectedComponents(
+    [...adjacency.keys()].sort((left, right) => left.localeCompare(right)),
+    adjacency
+  );
+
+  const folderCycles: DependencyCycle[] = [];
+  const cyclicFolderIds = new Set<string>();
+  const cyclicFolderEdgeKeys: string[] = [];
+  for (const component of components) {
+    if (component.length < 2) {
+      continue;
+    }
+    const members = [...component].sort((left, right) => left.localeCompare(right));
+    folderCycles.push({ id: `cycle:${members.join('|')}`, nodeIds: members });
+    const memberSet = new Set(members);
+    for (const member of members) {
+      cyclicFolderIds.add(member);
+      for (const target of adjacency.get(member) ?? []) {
+        if (memberSet.has(target)) {
+          cyclicFolderEdgeKeys.push(edgeKey(member, target));
+        }
+      }
+    }
+  }
+  folderCycles.sort((left, right) => left.id.localeCompare(right.id));
+  cyclicFolderEdgeKeys.sort((left, right) => left.localeCompare(right));
+
+  return {
+    folderCycles,
+    cyclicFolderIds: [...cyclicFolderIds].sort((left, right) =>
+      left.localeCompare(right)),
+    cyclicFolderEdgeKeys
   };
 }
 
